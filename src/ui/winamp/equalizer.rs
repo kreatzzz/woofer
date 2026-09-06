@@ -101,9 +101,7 @@ pub(super) fn show(app: &mut App, view: &mut View, now: Option<&NowPlaying>, foc
     graph(view, &settings);
     let preamp = fraction(settings.preamp_db);
     if let Some(value) = slider(view, layout::EQ_PREAMP, "eq-preamp", preamp) {
-        // The preamp never boosts: the top half of its track is dead.
-        app.actions
-            .push(Action::SetEqPreamp(decibels(value).min(0.0)));
+        app.actions.push(Action::SetEqPreamp(decibels(value)));
     }
     for (band, gain_db) in settings.bands_db.into_iter().enumerate() {
         let area = layout::eq_band(band);
@@ -139,7 +137,12 @@ fn shade(app: &mut App, view: &mut View, now: Option<&NowPlaying>, focused: bool
         .map(|now| now.volume_percent)
         .unwrap_or_else(|| crate::app::volume_to_percent(app.local.volume));
     let track = layout::EQ_SHADE_VOLUME;
-    let (_, event) = view.slider(track, "eq-shade-volume", layout::EQ_SHADE_THUMB);
+    let (response, event) = view.slider(track, "eq-shade-volume", layout::EQ_SHADE_THUMB);
+    let notches = super::super::widgets::wheel_notches(view.ui, &response);
+    if notches != 0 {
+        let level = (i32::from(volume) + 5 * notches).clamp(0, 100);
+        app.actions.push(Action::SetVolume(level as u8));
+    }
     match event {
         SliderEvent::Dragging(value) => {
             app.volume_preview = Some(value);

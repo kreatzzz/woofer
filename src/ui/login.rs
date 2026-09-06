@@ -9,11 +9,11 @@ use crate::theme;
 
 pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
     let palette = app.palette;
-    let ctx = ui.ctx().clone();
     egui::CentralPanel::default()
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
             let rect = ui.max_rect();
+            super::titlebar_drag(ui, rect);
             let top = super::blend(palette.window, palette.accent, 0.10);
             super::widgets::paint_vertical_gradient(ui, rect, top, palette.window);
             let card_width = 440.0;
@@ -50,7 +50,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, connecting: bool) {
                             });
                             ui.add_space(6.0);
                             if theme::link(ui, "Didn't open? Open the sign-in page again", theme::regular(13.0), palette.secondary).clicked() {
-                                ctx.open_url(egui::OpenUrl::new_tab(url));
+                                app.actions.push(Action::OpenUrl(url));
                             }
                             ui.add_space(14.0);
                             if theme::pill_button(ui, &palette, "Cancel", false).clicked() {

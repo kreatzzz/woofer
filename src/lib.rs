@@ -9,6 +9,7 @@ pub mod bidi;
 pub mod demo;
 pub mod eq;
 pub mod images;
+pub mod limiter;
 pub mod lyrics;
 #[cfg(target_os = "macos")]
 pub mod mac_menu;
@@ -20,9 +21,11 @@ pub mod media_controls;
 #[path = "media_native.rs"]
 pub mod media_controls;
 pub mod model;
+pub mod opener;
 pub mod paths;
 pub mod player;
 pub mod plugins;
+pub mod resample;
 pub mod settings;
 pub mod single_instance;
 pub mod sink;

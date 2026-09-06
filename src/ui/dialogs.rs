@@ -63,15 +63,28 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 .selectable(false),
                         );
                     };
-                    egui::Grid::new("shortcuts")
-                        .num_columns(2)
-                        .spacing([24.0, 8.0])
+                    // Keep the action list scrollable so the confirmation
+                    // button remains reachable on short windows.
+                    let room = ui.ctx().content_rect().height() - 190.0;
+                    egui::ScrollArea::vertical()
+                        .max_height(room.max(120.0))
+                        .auto_shrink([false, true])
                         .show(ui, |ui| {
-                            for (keys, description) in super::keys::SHORTCUTS {
-                                cell(ui, keys, theme::semibold(13.0), palette.text);
-                                cell(ui, description, theme::regular(13.5), palette.secondary);
-                                ui.end_row();
-                            }
+                            egui::Grid::new("shortcuts")
+                                .num_columns(2)
+                                .spacing([24.0, 8.0])
+                                .show(ui, |ui| {
+                                    for (keys, description) in super::keys::SHORTCUTS {
+                                        cell(ui, keys, theme::semibold(13.0), palette.text);
+                                        cell(
+                                            ui,
+                                            description,
+                                            theme::regular(13.5),
+                                            palette.secondary,
+                                        );
+                                        ui.end_row();
+                                    }
+                                });
                         });
                     ui.add_space(16.0);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -180,6 +193,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             }
         });
+    app.dialog_rect = Some(response.response.rect);
     if response.should_close() {
         app.actions.push(Action::CloseDialog);
     }

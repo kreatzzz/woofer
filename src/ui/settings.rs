@@ -316,7 +316,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &palette,
             "Keep music playing when the window closes",
-            "Woofer hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+            super::keys::platform_shortcut(
+                "Woofer hides to the system tray. Quit from the tray menu or with Ctrl+Q.",
+                "Woofer hides to the system tray. Quit from the tray menu or with Cmd+Q.",
+            ),
             |ui| {
                 if widgets::switch(ui, &palette, &mut app.settings.keep_playing_in_background)
                     .changed()
@@ -368,6 +371,29 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 },
             );
         }
+        #[cfg(windows)]
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Output buffer",
+            "More buffering prevents clicks on busy computers; less makes controls respond sooner.",
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let current = app.settings.audio_buffer_ms;
+                    for ms in [50u32, 100, 200] {
+                        let label = format!("{ms} ms");
+                        if theme::soft_button(ui, &palette, None, &label, current == ms).clicked()
+                            && current != ms
+                        {
+                            app.settings.audio_buffer_ms = ms;
+                            changed = true;
+                            playback_dirty = true;
+                        }
+                    }
+                });
+            },
+        );
         widgets::setting_row(
             ui,
             &palette,
@@ -456,8 +482,33 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         widgets::setting_row(
             ui,
             &palette,
+            "Compact library sidebar",
+            "Show library names in single-line rows without cover artwork.",
+            |ui| {
+                if widgets::switch(ui, &palette, &mut app.settings.sidebar_compact).changed() {
+                    changed = true;
+                }
+            },
+        );
+        widgets::setting_row(
+            ui,
+            &palette,
+            "Compact track list",
+            "Show track names and artists in one line without cover artwork.",
+            |ui| {
+                if widgets::switch(ui, &palette, &mut app.settings.tracklist_compact).changed() {
+                    changed = true;
+                }
+            },
+        );
+        widgets::setting_row(
+            ui,
+            &palette,
             "Interface zoom",
-            "Ctrl+Plus and Ctrl+Minus work anywhere; Ctrl+0 resets.",
+            super::keys::platform_shortcut(
+                "Ctrl+Plus and Ctrl+Minus work anywhere; Ctrl+0 resets.",
+                "Cmd+Plus and Cmd+Minus work anywhere; Cmd+0 resets.",
+            ),
             |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
@@ -489,7 +540,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui,
             &palette,
             "Mini player",
-            "Woofer becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Ctrl+M, brings this window back. Drop a skin on either window to add it.",
+            super::keys::platform_shortcut(
+                "Woofer becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Ctrl+M, brings this window back. Drop a skin on either window to add it.",
+                "Woofer becomes a small player that wears classic Winamp skins (.wsz files); the logo in the skin, or Cmd+Shift+M, brings this window back. Drop a skin on either window to add it.",
+            ),
             |ui| {
                 if theme::pill_button(ui, &palette, "Switch to it", true).clicked() {
                     app.actions.push(Action::ToggleWinampWindow);
@@ -620,7 +674,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.x = 14.0;
             let on = app.settings.eq_on;
             let mut preamp = app.settings.eq_preamp_db;
-            if eq_slider(ui, &palette, "Pre", &mut preamp, 0.0, on) {
+            if eq_slider(ui, &palette, "Pre", &mut preamp, crate::eq::RANGE_DB, on) {
                 app.actions.push(Action::SetEqPreamp(preamp));
             }
             for (band, hz) in crate::eq::BANDS.iter().enumerate() {
@@ -747,6 +801,16 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
+            let check_label = if app.update_checking {
+                "Checking…"
+            } else {
+                "Check for updates"
+            };
+            if theme::soft_button(ui, &palette, Some(Icon::Refresh), check_label, false).clicked()
+                && !app.update_checking
+            {
+                app.actions.push(Action::CheckForUpdates);
+            }
             if theme::soft_button(ui, &palette, Some(Icon::Info), "Keyboard shortcuts", false)
                 .clicked()
             {
@@ -755,8 +819,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             if theme::soft_button(ui, &palette, Some(Icon::ExternalLink), "Source code", false)
                 .clicked()
             {
-                ui.ctx()
-                    .open_url(egui::OpenUrl::new_tab(env!("CARGO_PKG_REPOSITORY")));
+                app.actions
+                    .push(Action::OpenUrl(env!("CARGO_PKG_REPOSITORY").into()));
             }
         });
     });
@@ -776,9 +840,8 @@ fn hertz(hz: f32) -> String {
     }
 }
 
-/// One vertical slider in the app's own style: the track filled from
-/// 0 dB, the handle in the middle when flat, a double-click to put it
-/// back there. Returns whether it moved.
+/// One vertical slider in the app's own style: the handle in the middle when
+/// flat, a double-click to put it back there. Returns whether it moved.
 fn eq_slider(
     ui: &mut egui::Ui,
     palette: &Palette,

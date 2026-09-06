@@ -221,6 +221,7 @@ those things, and [CONTRIBUTING.md](CONTRIBUTING.md) prohibits them.
 | `Shift+←` / `Shift+→` | Seek 10 seconds |
 | `Ctrl+↑` / `Ctrl+↓` | Volume |
 | `M` | Mute |
+| `B` | Like or unlike the playing song |
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
@@ -230,6 +231,7 @@ those things, and [CONTRIBUTING.md](CONTRIBUTING.md) prohibits them.
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |
 | `Ctrl+,` | Settings |
+| `Ctrl+W` | Close the window |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
 

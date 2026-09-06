@@ -606,6 +606,10 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             "queue" => app.show_queue_panel = true,
             "devices" => app.show_devices = true,
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
+            "compact" => {
+                app.settings.sidebar_compact = true;
+                app.settings.tracklist_compact = true;
+            }
             "premium" => app.dialog = Some(Dialog::PremiumNeeded),
             "create" => {
                 app.dialog = Some(Dialog::CreatePlaylist {

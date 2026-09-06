@@ -99,8 +99,22 @@ pub const RADIUS: u8 = 8;
 pub const RADIUS_SMALL: u8 = 4;
 pub const ROW_HEIGHT: f32 = 56.0;
 pub const COMPACT_ROW_HEIGHT: f32 = 48.0;
+/// The compact track list: one line, no cover.
+pub const THIN_ROW_HEIGHT: f32 = 36.0;
 pub const PLAYER_BAR_HEIGHT: f32 = 88.0;
 pub const TOP_BAR_HEIGHT: f32 = 56.0;
+
+/// macOS hides the titlebar and draws app content to the top edge. Reserve
+/// room for the traffic lights there; other platforms and fullscreen have no
+/// inset.
+pub fn titlebar_inset(ctx: &egui::Context) -> f32 {
+    if cfg!(target_os = "macos") && !ctx.input(|input| input.viewport().fullscreen.unwrap_or(false))
+    {
+        28.0
+    } else {
+        0.0
+    }
+}
 
 const INTER_MEDIUM: &str = "inter-medium";
 const INTER_SEMIBOLD: &str = "inter-semibold";
@@ -254,11 +268,27 @@ fn install_fonts(ctx: &egui::Context) {
         .font_data
         .insert(INTER_BOLD.to_owned(), weighted(700.0));
 
+    let noto_emoji = include_bytes!("../assets/fonts/NotoEmoji.ttf");
+    fonts.font_data.insert(
+        "noto_emoji".to_owned(),
+        Arc::new(FontData::from_static(noto_emoji)),
+    );
+
     fonts
         .families
         .entry(FontFamily::Proportional)
         .or_default()
         .insert(0, "inter".to_owned());
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(1, "noto_emoji".to_owned());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(1, "noto_emoji".to_owned());
     let fallbacks: Vec<String> = fonts.families[&FontFamily::Proportional]
         .iter()
         .skip(1)

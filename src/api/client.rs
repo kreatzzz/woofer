@@ -22,6 +22,9 @@ const BASE_URL: &str = "https://api.spotify.com/v1";
 const MAX_IN_FLIGHT: usize = 6;
 const RATE_LIMIT_RETRIES: u32 = 3;
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(30);
+/// the search endpoint's maximum page size is now 10.
+const SEARCH_LIMIT_MIN: u32 = 1;
+const SEARCH_LIMIT_MAX: u32 = 10;
 
 #[derive(Clone, Debug, Error)]
 pub enum ApiError {
@@ -285,7 +288,7 @@ impl ApiClient {
             tokens: Mutex::new(None),
             limiter: Semaphore::new(MAX_IN_FLIGHT),
             cooldown_until: tokio::sync::Mutex::new(Instant::now()),
-            search_limit,
+            search_limit: search_limit.clamp(SEARCH_LIMIT_MIN, SEARCH_LIMIT_MAX),
             artist_albums_limit,
             source,
             activity,
@@ -996,6 +999,22 @@ mod tests {
         assert!(!is_quota_exhausted(
             r#"{"error":{"status":429,"message":"Too many requests"}}"#
         ));
+    }
+
+    #[test]
+    fn search_limit_is_clamped_to_spotify_current_maximum() {
+        let activity = Arc::new(NetActivity::default());
+        let client = ApiClient::new(
+            reqwest::Client::new(),
+            activity.clone(),
+            20,
+            50,
+            ApiSource::Shared,
+        );
+        assert_eq!(client.search_limit, SEARCH_LIMIT_MAX);
+
+        let client = ApiClient::new(reqwest::Client::new(), activity, 0, 50, ApiSource::Shared);
+        assert_eq!(client.search_limit, SEARCH_LIMIT_MIN);
     }
 
     #[tokio::test]

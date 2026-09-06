@@ -466,6 +466,9 @@ pub struct TrackRow<'a> {
     pub added_by: Option<&'a str>,
     pub show_added_by: bool,
     pub compact: bool,
+    /// One line for the name and artists in the compact track list. `compact`
+    /// remains the queue's narrow row, so the two layouts stay independent.
+    pub thin: bool,
     /// Vertical offset while rows part around the slot a dragged row
     /// would land in; 0.0 everywhere else.
     pub shift: f32,
@@ -518,7 +521,9 @@ fn columns(width: f32, row: &TrackRow<'_>) -> Columns {
 /// Draws a track row; pushes actions for what the user did.
 pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     let palette = app.palette;
-    let row_height = if row.compact {
+    let row_height = if row.thin {
+        theme::THIN_ROW_HEIGHT
+    } else if row.compact {
         theme::COMPACT_ROW_HEIGHT
     } else {
         theme::ROW_HEIGHT
@@ -651,30 +656,34 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
     } else {
         palette.secondary
     };
-    let mut child = ui.new_child(
-        UiBuilder::new()
-            .max_rect(title_rect)
-            .layout(Layout::top_down(Align::LEFT)),
-    );
-    child.set_clip_rect(title_rect.intersect(ui.clip_rect()));
-    child.spacing_mut().item_spacing = vec2(6.0, 1.0);
-    child.spacing_mut().interact_size.y = 16.0;
-    let vertical_pad = ((row_height - 37.0) / 2.0).max(4.0);
-    child.add_space(vertical_pad);
-    child.horizontal(|ui| {
-        ui.set_max_width(title_rect.width());
-        theme::text(ui, row.item.name(), theme::medium(14.5), title_color);
-    });
-    child.horizontal(|ui| {
-        ui.set_max_width(title_rect.width());
+    if row.thin {
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(title_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        child.set_clip_rect(title_rect.intersect(ui.clip_rect()));
+        child.spacing_mut().item_spacing = vec2(6.0, 0.0);
+        theme::text(
+            &mut child,
+            row.item.name(),
+            theme::medium(14.0),
+            title_color,
+        );
         match row.item {
             PlayableItem::Track(track) => {
                 if track.explicit {
-                    explicit_badge(ui, &palette);
+                    explicit_badge(&mut child, &palette);
                 }
+                theme::text(
+                    &mut child,
+                    "•",
+                    theme::regular(12.0),
+                    palette.secondary.gamma_multiply(0.6),
+                );
                 let names = track.artist_names();
                 let first_artist = track.artists.iter().find_map(|artist| artist.id.clone());
-                let response = theme::link(ui, names, theme::regular(12.5), subtitle_color);
+                let response = theme::link(&mut child, names, theme::regular(13.0), subtitle_color);
                 if response.clicked()
                     && let Some(id) = first_artist
                 {
@@ -687,16 +696,72 @@ pub fn track_row(ui: &mut Ui, app: &mut App, row: TrackRow<'_>) {
                     .as_ref()
                     .map(|show| show.name.clone())
                     .unwrap_or_default();
-                let show_id = episode.show.as_ref().map(|show| show.id.clone());
-                let response = theme::link(ui, subtitle, theme::regular(12.5), subtitle_color);
-                if response.clicked()
-                    && let Some(id) = show_id
-                {
-                    app.actions.push(Action::Open(Page::Show(id)));
+                if !subtitle.is_empty() {
+                    theme::text(
+                        &mut child,
+                        "•",
+                        theme::regular(12.0),
+                        palette.secondary.gamma_multiply(0.6),
+                    );
+                    let show_id = episode.show.as_ref().map(|show| show.id.clone());
+                    let response =
+                        theme::link(&mut child, subtitle, theme::regular(13.0), subtitle_color);
+                    if response.clicked()
+                        && let Some(id) = show_id
+                    {
+                        app.actions.push(Action::Open(Page::Show(id)));
+                    }
                 }
             }
         }
-    });
+    } else {
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(title_rect)
+                .layout(Layout::top_down(Align::LEFT)),
+        );
+        child.set_clip_rect(title_rect.intersect(ui.clip_rect()));
+        child.spacing_mut().item_spacing = vec2(6.0, 1.0);
+        child.spacing_mut().interact_size.y = 16.0;
+        let vertical_pad = ((row_height - 37.0) / 2.0).max(4.0);
+        child.add_space(vertical_pad);
+        child.horizontal(|ui| {
+            ui.set_max_width(title_rect.width());
+            theme::text(ui, row.item.name(), theme::medium(14.5), title_color);
+        });
+        child.horizontal(|ui| {
+            ui.set_max_width(title_rect.width());
+            match row.item {
+                PlayableItem::Track(track) => {
+                    if track.explicit {
+                        explicit_badge(ui, &palette);
+                    }
+                    let names = track.artist_names();
+                    let first_artist = track.artists.iter().find_map(|artist| artist.id.clone());
+                    let response = theme::link(ui, names, theme::regular(12.5), subtitle_color);
+                    if response.clicked()
+                        && let Some(id) = first_artist
+                    {
+                        app.actions.push(Action::Open(Page::Artist(id)));
+                    }
+                }
+                PlayableItem::Episode(episode) => {
+                    let subtitle = episode
+                        .show
+                        .as_ref()
+                        .map(|show| show.name.clone())
+                        .unwrap_or_default();
+                    let show_id = episode.show.as_ref().map(|show| show.id.clone());
+                    let response = theme::link(ui, subtitle, theme::regular(12.5), subtitle_color);
+                    if response.clicked()
+                        && let Some(id) = show_id
+                    {
+                        app.actions.push(Action::Open(Page::Show(id)));
+                    }
+                }
+            }
+        });
+    }
     x = text_right;
 
     // Album.
@@ -1341,6 +1406,42 @@ pub enum SliderEvent {
     Committed(f32),
 }
 
+/// Whole notches the wheel turned over `response` since it was last asked,
+/// with up being positive. Line-based mouse wheels report one event per
+/// detent even when the OS expands that event into several scroll lines;
+/// point-based trackpads and free-spinning wheels accumulate until they reach
+/// the same fifty-point notch.
+pub fn wheel_notches(ui: &Ui, response: &egui::Response) -> i32 {
+    const NOTCH: f32 = 50.0;
+    if !response.hovered() {
+        return 0;
+    }
+    let (lines, points) = ui.input(|input| {
+        let mut lines = 0.0f32;
+        let mut points = 0.0f32;
+        for event in &input.events {
+            if let egui::Event::MouseWheel { unit, delta, .. } = event {
+                match unit {
+                    egui::MouseWheelUnit::Line | egui::MouseWheelUnit::Page => {
+                        lines += if delta.y.abs() >= 1.0 {
+                            delta.y.signum()
+                        } else {
+                            delta.y
+                        };
+                    }
+                    egui::MouseWheelUnit::Point => points += delta.y,
+                }
+            }
+        }
+        (lines, points)
+    });
+    let id = response.id.with("wheel");
+    let total = ui.data(|data| data.get_temp::<f32>(id)).unwrap_or(0.0) + points + lines * NOTCH;
+    let notches = (total / NOTCH).trunc();
+    ui.data_mut(|data| data.insert_temp(id, total - notches * NOTCH));
+    notches as i32
+}
+
 /// A thin horizontal slider whose handle appears on hover, for seeking and
 /// volume. `value` is 0..=1.
 pub fn thin_slider(
@@ -1350,6 +1451,7 @@ pub fn thin_slider(
     value: f32,
     width: f32,
     accent: Color32,
+    wheel_step: Option<f32>,
 ) -> SliderEvent {
     let (rect, response) = ui.allocate_exact_size(vec2(width, 16.0), Sense::click_and_drag());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -1372,6 +1474,12 @@ pub fn thin_slider(
         && let Some(v) = pointer_value
     {
         event = SliderEvent::Committed(v);
+    }
+    if let Some(step) = wheel_step {
+        let notches = wheel_notches(ui, &response);
+        if notches != 0 {
+            event = SliderEvent::Committed((value + step * notches as f32).clamp(0.0, 1.0));
+        }
     }
     let shown = match &event {
         SliderEvent::Dragging(v) => *v,

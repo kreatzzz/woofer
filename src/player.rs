@@ -50,6 +50,9 @@ pub struct EngineConfig {
     pub volume_dir: PathBuf,
     pub audio_cache_dir: Option<PathBuf>,
     pub audio_cache_limit: Option<u64>,
+    /// Requested output buffer length in milliseconds. The custom sink uses
+    /// this on Windows; native drivers choose their own period elsewhere.
+    pub buffer_ms: u32,
     /// Where the samples on their way out are copied for the visualiser.
     pub tap: Arc<AudioTap>,
     /// The equalizer's settings, shared with the window that sets them.
@@ -162,6 +165,9 @@ pub struct LocalState {
     pub volume: u16,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    /// The librespot engine's Spotify session is alive. Connect device
+    /// activity is separate: Spotify may make this device inactive while the
+    /// session remains ready to be activated by the next load.
     pub connected: bool,
     pub username: String,
     pub active_client: String,
@@ -222,6 +228,9 @@ pub struct LoadSpec {
     pub position_ms: u32,
     pub play: bool,
     pub shuffle: Option<bool>,
+    /// Ask librespot to follow a context with its autoplay station rather
+    /// than loading that context's own queue.
+    pub autoplay: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -463,12 +472,16 @@ impl Engine {
                     .clone()
                     .map(PlayingTrack::Uri)
                     .or_else(|| spec.offset_index.map(PlayingTrack::Index));
-                let context_options = spec.shuffle.map(|shuffle| {
-                    LoadContextOptions::Options(Options {
-                        shuffle,
-                        ..Options::default()
+                let context_options = if spec.autoplay {
+                    Some(LoadContextOptions::Autoplay)
+                } else {
+                    spec.shuffle.map(|shuffle| {
+                        LoadContextOptions::Options(Options {
+                            shuffle,
+                            ..Options::default()
+                        })
                     })
-                });
+                };
                 let options = LoadRequestOptions {
                     start_playing: spec.play,
                     seek_to: spec.position_ms,
@@ -510,6 +523,7 @@ fn sink_builder(
     mixer: &Arc<dyn Mixer>,
 ) -> SinkAndVolume {
     let device = config.audio_device.clone();
+    let buffer_ms = config.buffer_ms;
     let tap = Arc::clone(&config.tap);
     let eq = Arc::clone(&config.eq);
     let report: ErrorHook = Arc::new(move |message: String| {
@@ -527,25 +541,28 @@ fn sink_builder(
     {
         match audio_backend::find(Some(name.to_string())) {
             Some(builder) => {
-                // The player applies the volume before these sinks see the
-                // samples; the tap is told, so the bars show the music.
+                // Apply volume after the tap and limiter, so the same EQ
+                // boost remains available at a quiet output level.
                 let applied = mixer.get_soft_volume();
                 return (
                     Box::new(move || {
                         let sink = builder(device, AudioFormat::S16);
-                        Box::new(Tapped::new(sink, tap, Some(applied), eq)) as Box<dyn Sink>
+                        Box::new(Tapped::new(sink, tap, applied, true, eq)) as Box<dyn Sink>
                     }),
-                    mixer.get_soft_volume(),
+                    Box::new(NoOpVolume),
                 );
             }
             None => log::warn!("audio backend {name:?} is unavailable; using the default"),
         }
     }
     let volume = mixer.get_soft_volume();
+    // The custom output applies volume to already queued audio. The wrapper
+    // reads the same shared getter to place its limiter ceiling before it.
+    let ceiling = mixer.get_soft_volume();
     (
         Box::new(move || {
-            let sink = Box::new(RodioSink::new(device, report, volume));
-            Box::new(Tapped::new(sink, tap, None, eq)) as Box<dyn Sink>
+            let sink = Box::new(RodioSink::new(device, report, volume, buffer_ms));
+            Box::new(Tapped::new(sink, tap, ceiling, false, eq)) as Box<dyn Sink>
         }),
         Box::new(NoOpVolume),
     )
@@ -658,11 +675,10 @@ fn apply_event(state: &mut LocalState, event: PlayerEvent) -> bool {
             changed |= set(&mut state.username, user_name);
             changed
         }
-        PlayerEvent::SessionDisconnected { .. } => {
-            let mut changed = set(&mut state.connected, false);
-            changed |= set(&mut state.active_client, String::new());
-            changed
-        }
+        // In librespot this event means the Connect device became inactive,
+        // usually because another device took over. The engine session is
+        // still alive, and `Load` activates it again before starting a track.
+        PlayerEvent::SessionDisconnected { .. } => set(&mut state.active_client, String::new()),
         PlayerEvent::SessionClientChanged { client_name, .. } => {
             set(&mut state.active_client, client_name)
         }
@@ -762,6 +778,30 @@ mod tests {
         assert_eq!(state.playback, Playback::Playing);
     }
 
+    /// Spotify making this Connect device inactive must not be mistaken for
+    /// the engine session ending. A later playlist load can activate the same
+    /// Spirc instance; marking it disconnected makes the UI hold that load
+    /// forever while waiting for a reconnect that will never happen.
+    #[test]
+    fn an_inactive_connect_device_keeps_its_engine_session() {
+        let mut state = LocalState {
+            connected: true,
+            active_client: "Woofer".into(),
+            ..LocalState::default()
+        };
+
+        assert!(apply_event(
+            &mut state,
+            PlayerEvent::SessionDisconnected {
+                connection_id: "connection".into(),
+                user_name: "listener".into(),
+            },
+        ));
+
+        assert!(state.connected, "the Spotify session is still usable");
+        assert!(state.active_client.is_empty());
+    }
+
     #[test]
     fn repeat_cycles_and_maps() {
         assert_eq!(RepeatMode::Off.next(), RepeatMode::Context);
@@ -773,6 +813,7 @@ mod tests {
     #[test]
     fn device_id_is_stable_hex() {
         let config = EngineConfig {
+            buffer_ms: crate::sink::DEFAULT_BUFFER_MS,
             tap: AudioTap::new(),
             eq: crate::eq::shared(),
             device_name: "Woofer".into(),

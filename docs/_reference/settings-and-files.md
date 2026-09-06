@@ -53,6 +53,7 @@ main fields are:
 | `gapless` | `true` | Gapless playback |
 | `audio_backend` | platform | `pulseaudio` or `rodio` on Linux |
 | `audio_cache_mb` | `1024` | On-disk audio cache budget |
+| `audio_buffer_ms` | `100` | Requested Windows output buffer, 20 to 500 ms; other platforms use their native buffer |
 | `theme` | `dark` | `dark`, `light`, or `system` |
 | `accent_from_art` | `true` | Tint pages with album art |
 | `winamp_window` | `false` | The window is the Winamp mini player |
@@ -64,7 +65,7 @@ main fields are:
 | `playlist_height` | `174` | The playlist window's height in skin pixels |
 | `eq_open` | `false` | The equalizer window is open under the mini player |
 | `eq_on` | `false` | The equalizer shapes local playback |
-| `eq_preamp_db` | `0` | The preamp, in decibels, never above zero |
+| `eq_preamp_db` | `0` | The preamp, in decibels, from -12 to +12 |
 | `eq_bands_db` | ten zeros | The bands from 60 Hz to 16 kHz, in decibels, -12 to 12 |
 | `balance` | `0` | Left to right, -1 to 1, for local playback |
 | `mono` | `false` | Play both channels the same |

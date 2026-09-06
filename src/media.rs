@@ -4,6 +4,8 @@
 //! Playing on macOS answer the same questions, so the interface speaks this
 //! vocabulary and each platform module translates it.
 
+use std::path::PathBuf;
+
 use crate::player::{Playback, RepeatMode};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,6 +33,10 @@ pub struct MediaTrack {
     pub artists: Vec<String>,
     pub album: String,
     pub art_url: Option<String>,
+    /// The cached artwork path, when it has already been downloaded. Native
+    /// controls use this instead of fetching a remote URL themselves; Linux
+    /// MPRIS keeps using `art_url` because the desktop resolves it.
+    pub art_file: Option<PathBuf>,
     pub duration_ms: u32,
 }
 

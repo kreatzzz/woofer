@@ -9,6 +9,7 @@
 //! closing to the tray. macOS needs none of that: its handlers run on the
 //! main thread, which the headless loop in `main` keeps pumping.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -25,6 +26,32 @@ type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// How far a seek button without an amount moves.
 const SEEK_STEP_MS: i64 = 10_000;
+
+/// Turn a downloaded cover into the spelling accepted by the native media
+/// controls. macOS parses the value as a URL, so URL-significant path bytes
+/// must be escaped; Windows consumes the remainder as a path and needs it
+/// left untouched.
+#[cfg(target_os = "macos")]
+fn file_url(path: &Path) -> String {
+    use std::fmt::Write;
+
+    let mut url = String::from("file://");
+    for byte in path.to_string_lossy().bytes() {
+        match byte {
+            b'/' | b'-' | b'.' | b'_' | b'~' => url.push(byte as char),
+            byte if byte.is_ascii_alphanumeric() => url.push(byte as char),
+            byte => {
+                let _ = write!(url, "%{byte:02X}");
+            }
+        }
+    }
+    url
+}
+
+#[cfg(not(target_os = "macos"))]
+fn file_url(path: &Path) -> String {
+    format!("file://{}", path.display())
+}
 
 fn command_for(event: MediaControlEvent, track_uri: &str) -> Option<MediaCommand> {
     let step = |direction: SeekDirection, ms: i64| match direction {
@@ -105,12 +132,21 @@ impl Bridge {
                 .as_ref()
                 .map(|track| track.uri.clone())
                 .unwrap_or_default();
+            // Never hand a remote URL to native controls. macOS loads the
+            // image synchronously and cannot report a failed request from its
+            // callback. The cache path is omitted until the download lands;
+            // the differing `MediaTrack` then causes a second metadata update.
+            let cover = state
+                .track
+                .as_ref()
+                .and_then(|track| track.art_file.as_deref())
+                .map(file_url);
             let metadata = match &state.track {
                 Some(track) => MediaMetadata {
                     title: Some(track.title.as_str()),
                     album: Some(track.album.as_str()),
                     artist: Some(artist.as_str()),
-                    cover_url: track.art_url.as_deref(),
+                    cover_url: cover.as_deref(),
                     duration: Some(Duration::from_millis(u64::from(track.duration_ms))),
                 },
                 None => MediaMetadata::default(),
@@ -311,6 +347,59 @@ impl MediaService {
         {
             host::poke(*thread_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Native controls are given a local file URI, never a network URL. This
+    /// keeps a failed cover-art request from occurring inside a platform
+    /// callback that cannot report it safely.
+    #[test]
+    fn artwork_is_a_local_file() {
+        let url = file_url(Path::new("/tmp/woofer/art/0badc0de"));
+        assert!(url.starts_with("file://"));
+        assert!(!url.starts_with("http"));
+    }
+
+    /// A file path can contain URL-significant bytes on macOS; escaping keeps
+    /// them part of the path rather than turning them into URL syntax.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_macos_file_url_escapes_path_bytes() {
+        assert_eq!(
+            file_url(Path::new("/Users/ada #1/Caches/art/0badc0de")),
+            "file:///Users/ada%20%231/Caches/art/0badc0de"
+        );
+    }
+
+    /// Windows consumes the value after `file://` as a path, so its spelling
+    /// must not percent-escape ordinary path characters.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_windows_file_url_keeps_the_path_as_written() {
+        assert_eq!(
+            file_url(Path::new(r"C:\Users\ada #1\art\0badc0de")),
+            r"file://C:\Users\ada #1\art\0badc0de"
+        );
+    }
+
+    /// Artwork landing after the initial track changes the metadata and
+    /// therefore gets a second update.
+    #[test]
+    fn art_arriving_is_a_change_worth_sending() {
+        let bare = crate::media::MediaTrack {
+            uri: "spotify:track:1".to_owned(),
+            art_url: Some("https://i.scdn.co/image/abc".to_owned()),
+            ..Default::default()
+        };
+        let with_art = crate::media::MediaTrack {
+            art_file: Some(std::path::PathBuf::from("/tmp/woofer/art/0badc0de")),
+            ..bare.clone()
+        };
+        assert_ne!(bare, with_art);
     }
 }
 

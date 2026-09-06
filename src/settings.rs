@@ -98,6 +98,11 @@ pub struct Settings {
     /// librespot backend name; `None` picks the platform default.
     pub audio_backend: Option<String>,
     pub audio_device: Option<String>,
+    /// Requested Windows output buffer length in milliseconds. Smaller values
+    /// respond sooner; larger values give a busy machine more room to avoid
+    /// underruns. Other platforms keep the driver's native buffer.
+    #[serde(default = "default_buffer_ms")]
+    pub audio_buffer_ms: u32,
     pub audio_cache: bool,
     pub audio_cache_mb: u64,
     pub theme: ThemeChoice,
@@ -107,9 +112,13 @@ pub struct Settings {
     pub volume: u16,
     /// Whether the library sidebar is visible.
     pub sidebar_visible: bool,
+    /// Use compact single-line rows without cover art in the sidebar.
+    pub sidebar_compact: bool,
     pub sidebar_width: f32,
     pub lyrics_width: f32,
     pub queue_width: f32,
+    /// Use compact single-line rows without cover art in track lists.
+    pub tracklist_compact: bool,
     pub search_history: Vec<String>,
     pub show_shortcut_hints: bool,
     /// An optional personal Spotify Web API application id. The shared
@@ -159,7 +168,7 @@ pub struct Settings {
     pub eq_open: bool,
     /// The equalizer shapes local playback.
     pub eq_on: bool,
-    /// The preamp, in decibels, never above zero.
+    /// The preamp, in decibels, from -12 to +12.
     pub eq_preamp_db: f32,
     /// The ten bands, in decibels, 60 Hz to 16 kHz.
     pub eq_bands_db: [f32; 10],
@@ -185,15 +194,18 @@ impl Default for Settings {
             gapless: true,
             audio_backend: None,
             audio_device: None,
+            audio_buffer_ms: default_buffer_ms(),
             audio_cache: true,
             audio_cache_mb: 1024,
             theme: ThemeChoice::Dark,
             accent_from_art: true,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
             sidebar_visible: true,
+            sidebar_compact: false,
             sidebar_width: 250.0,
             lyrics_width: 360.0,
             queue_width: 360.0,
+            tracklist_compact: false,
             search_history: Vec::new(),
             show_shortcut_hints: true,
             web_client_id: None,
@@ -225,6 +237,10 @@ impl Default for Settings {
             winamp_shaded: false,
         }
     }
+}
+
+fn default_buffer_ms() -> u32 {
+    crate::sink::DEFAULT_BUFFER_MS
 }
 
 impl Settings {
@@ -391,6 +407,23 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(!restored.sidebar_visible);
+    }
+
+    #[test]
+    fn compact_layout_settings_default_and_round_trip() {
+        let older: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!older.sidebar_compact);
+        assert!(!older.tracklist_compact);
+
+        let settings = Settings {
+            sidebar_compact: true,
+            tracklist_compact: true,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert!(restored.sidebar_compact);
+        assert!(restored.tracklist_compact);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use egui::Color32;
@@ -146,6 +147,10 @@ pub struct App {
     last_settings_save: Instant,
     pub backend: Backend,
     media_controls: Option<MediaService>,
+    /// The artwork file most recently handed to native media controls. A
+    /// frame sync runs often, while the cache lookup touches disk, so retain
+    /// the answer until the track's artwork changes.
+    media_art: Option<(String, PathBuf)>,
     tray: Option<TrayService>,
     pub window_hidden: bool,
     /// The window should close but the process should stay in the tray.
@@ -193,6 +198,9 @@ pub struct App {
     last_session_save: Instant,
     /// The saved zoom has been applied to the context once.
     zoom_applied: bool,
+    /// Frames left to re-send the Winamp window's always-on-top level after
+    /// mapping. Some X11 window managers drop the creation-time level.
+    winamp_level_reassert: u8,
     pub devices: Vec<Device>,
     /// Receivers seen on the local network. Spotify lists a receiver only
     /// once it has an account, so these are the ones it cannot see yet.
@@ -260,6 +268,9 @@ pub struct App {
     /// A play request made while the local engine was still connecting; it
     /// starts the moment the engine reports ready.
     queued_play: Option<PlayRequest>,
+    /// The plain list most recently handed to local playback. Librespot can
+    /// autoplay from a context URI, but a bare list has no context to follow.
+    local_list: Option<Vec<String>>,
     /// A plugin download from a URL, in flight on a thread; its receiver
     /// is polled every frame in tick(). Installation itself also runs on the
     /// worker, so validation and disk writes never hold the UI frame.
@@ -285,6 +296,9 @@ pub struct App {
     session_window_pos: Option<[f32; 2]>,
     /// Last observed window geometry, updated each frame for saving.
     last_window_size: Option<[f32; 2]>,
+    /// Rectangle occupied by the open dialog, useful for keeping constrained
+    /// dialog content inside the current viewport.
+    pub dialog_rect: Option<egui::Rect>,
     last_window_pos: Option<[f32; 2]>,
     last_eviction: Instant,
     pub sign_in_url: Option<String>,
@@ -345,6 +359,8 @@ pub struct App {
     /// A newer release than this build, once GitHub has said so.
     pub update: Option<crate::updates::Release>,
     last_update_check: Option<Instant>,
+    /// A manual or scheduled release request is currently in flight.
+    pub update_checking: bool,
     /// The Winamp window and the skin it wears.
     pub winamp: crate::winamp::WinampState,
 }
@@ -413,6 +429,7 @@ impl App {
             last_settings_save: Instant::now(),
             backend,
             media_controls,
+            media_art: None,
             tray,
             window_hidden: false,
             hide_intent: false,
@@ -438,6 +455,7 @@ impl App {
             session_dirty: false,
             last_session_save: Instant::now(),
             zoom_applied: false,
+            winamp_level_reassert: 0,
             devices: Vec::new(),
             receivers: Vec::new(),
             activating_receiver: None,
@@ -481,6 +499,7 @@ impl App {
             pending_play_keys: Vec::new(),
             pending_play_at: None,
             queued_play: None,
+            local_list: None,
             pending_install: Vec::new(),
             pending_deep_link: None,
             pending_catalog_offer: None,
@@ -491,6 +510,7 @@ impl App {
             session_window_size: session.window_size,
             session_window_pos: session.window_pos,
             last_window_size: None,
+            dialog_rect: None,
             last_window_pos: None,
             last_eviction: Instant::now(),
             sign_in_url: None,
@@ -527,6 +547,7 @@ impl App {
             resume_position_ms: session.last_position_ms,
             update: None,
             last_update_check: None,
+            update_checking: false,
             winamp: crate::winamp::WinampState::new(session.winamp_pos, tap, eq),
         };
         app.local.volume = app.settings.volume;
@@ -564,6 +585,9 @@ impl App {
         if self.settings.winamp_window {
             // The mini player sizes itself; the big window's geometry
             // waits here for its return.
+            if self.settings.winamp_on_top {
+                self.winamp_level_reassert = 3;
+            }
             return;
         }
         if let Some(size) = self.session_window_size.take() {
@@ -676,7 +700,7 @@ impl App {
             // names another one and something is believed to be playing.
             let contradicted = remote.as_deref().is_some_and(|uri| uri != assumed.uri);
             if held || (!contradicted && self.believed_playing()) {
-                return Some(assumed.uri.clone());
+                return (!assumed.uri.is_empty()).then(|| assumed.uri.clone());
             }
         }
         remote
@@ -1010,12 +1034,30 @@ impl App {
                     self.user_names.insert(id, name);
                 }
                 Event::WebApp { client_id } => self.web_app = client_id,
-                Event::UpdateAvailable { version, url } => {
-                    let notice = crate::updates::Release { version, url };
-                    if self.update.as_ref() != Some(&notice) {
-                        self.toast(format!("Woofer {} is out", notice.version));
+                Event::UpdateChecked { manual, result } => {
+                    self.update_checking = false;
+                    match result {
+                        Ok(Some(notice)) => {
+                            if manual || self.update.as_ref() != Some(&notice) {
+                                self.toast(format!("Woofer {} is out", notice.version));
+                            }
+                            self.update = Some(notice);
+                        }
+                        Ok(None) => {
+                            self.update = None;
+                            if manual {
+                                self.toast("Woofer is up to date");
+                            } else {
+                                log::debug!("this is the newest release");
+                            }
+                        }
+                        Err(error) if manual => {
+                            self.toast_error(format!("Couldn't check for updates: {error}"));
+                        }
+                        Err(error) => {
+                            log::debug!("could not check for a newer release: {error}");
+                        }
                     }
-                    self.update = Some(notice);
                 }
             }
         }
@@ -1155,6 +1197,21 @@ impl App {
                 }
             }
         }
+        if let Some(seed) = autoplay_seed(
+            self.local_list.as_deref(),
+            self.settings.autoplay,
+            &self.local,
+            &state,
+        ) {
+            log::info!("the list ended; starting autoplay after {seed}");
+            self.local_list = None;
+            self.backend.player(PlayerCommand::Load(LoadSpec {
+                context_uri: Some(seed),
+                play: true,
+                autoplay: true,
+                ..LoadSpec::default()
+            }));
+        }
         self.local = state;
         if let Some(volume) = held_volume {
             self.local.volume = volume;
@@ -1205,7 +1262,10 @@ impl App {
         if let Some(url) = now.art_small.or(now.art_url) {
             self.tint_for(Some(&url));
         }
-        if matches!(self.page(), Page::Queue) || self.show_queue_panel {
+        if matches!(self.page(), Page::Queue)
+            || self.show_queue_panel
+            || (self.settings.winamp_window && self.settings.playlist_open)
+        {
             self.refresh_queue(true);
         }
         if self.show_lyrics_panel {
@@ -1323,6 +1383,13 @@ impl App {
     }
 
     fn tick(&mut self, ctx: &egui::Context) {
+        if self.winamp_level_reassert > 0 {
+            self.winamp_level_reassert -= 1;
+            self.push_winamp_level(ctx);
+            if self.winamp_level_reassert > 0 {
+                ctx.request_repaint();
+            }
+        }
         let now = Instant::now();
         if !self.zoom_applied {
             self.zoom_applied = true;
@@ -1347,8 +1414,7 @@ impl App {
                 .last_update_check
                 .is_none_or(|at| at.elapsed() >= crate::updates::CHECK_INTERVAL)
         {
-            self.last_update_check = Some(now);
-            self.backend.send(Command::CheckForUpdates);
+            self.check_for_updates(false);
         }
 
         if self.is_connected() && !self.offline {
@@ -1609,7 +1675,23 @@ impl App {
         }
     }
 
+    /// Returns the downloaded file for `url`, once the art cache has it.
+    fn media_art_file(&mut self, url: &str) -> Option<PathBuf> {
+        if let Some((known, file)) = &self.media_art
+            && known == url
+        {
+            return Some(file.clone());
+        }
+        let file = self.backend.art().cached_file(url)?;
+        self.media_art = Some((url.to_owned(), file.clone()));
+        Some(file)
+    }
+
     fn sync_media_controls(&mut self) {
+        let art_file = self
+            .now_playing()
+            .and_then(|now| now.art_url)
+            .and_then(|url| self.media_art_file(&url));
         let state = match self.now_playing() {
             Some(now) => MediaState {
                 playback: if now.playing {
@@ -1629,6 +1711,7 @@ impl App {
                         .collect(),
                     album: now.album_name.clone(),
                     art_url: now.art_url.clone(),
+                    art_file,
                     duration_ms: now.duration_ms,
                 }),
                 position_ms: now.position_ms,
@@ -2374,7 +2457,11 @@ impl App {
                         .filter_map(|track| track.id.clone())
                         .take(5)
                         .collect();
-                    if !seeds.is_empty() {
+                    if seeds.is_empty() {
+                        // no top tracks means there is nothing to ask the
+                        // optional recommendations endpoint about.
+                        self.home.recommendations = Loadable::Loaded(Vec::new());
+                    } else {
                         if self.home.recommendations.get().is_none() {
                             self.home.recommendations = Loadable::Loading;
                         }
@@ -2420,13 +2507,12 @@ impl App {
                     return;
                 }
                 let filtered = result.map(|playlists| {
-                    let needle = term.to_lowercase();
                     let mut seen = std::collections::HashSet::new();
                     let mut matching: Vec<Playlist> = playlists
                         .into_iter()
                         .filter(|playlist| {
                             let owner = playlist.owner.id.as_deref().unwrap_or("");
-                            playlist.name.to_lowercase().contains(&needle)
+                            is_made_for_you(&playlist.name, &term)
                                 && (owner == "spotify" || playlist.owner_name() == "Spotify")
                                 && seen.insert(playlist.name.to_lowercase())
                         })
@@ -3032,6 +3118,15 @@ impl App {
         self.remote_polled_at = Instant::now() - REMOTE_POLL_IDLE + Duration::from_millis(700);
     }
 
+    fn check_for_updates(&mut self, manual: bool) {
+        if self.update_checking || self.offline {
+            return;
+        }
+        self.update_checking = true;
+        self.last_update_check = Some(Instant::now());
+        self.backend.send(Command::CheckForUpdates { manual });
+    }
+
     // ---- plugins ---------------------------------------------------------------
 
     /// Rereads the plugin list from disk; called at startup and after
@@ -3434,9 +3529,6 @@ impl App {
         self.recent_contexts.truncate(60);
     }
 
-    /// With `shuffle_first`, shuffle is turned on before playback starts,
-    /// in one ordered exchange: two independent requests race, and shuffle
-    /// sometimes lost.
     /// A random playable track of a context the app has rows for: the
     /// start of a shuffle play. `None` when no rows are at hand.
     fn random_track_in(&self, context_uri: &str) -> Option<String> {
@@ -3470,13 +3562,65 @@ impl App {
         if uris.is_empty() {
             return None;
         }
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .subsec_nanos() as usize;
-        Some(uris[nanos % uris.len()].to_string())
+        Some(uris[rand::random_range(0..uris.len())].to_string())
     }
 
+    /// How many songs Spotify last said a context holds, from the library
+    /// alone. This lets a remote shuffle begin at a random position before
+    /// the context's rows have been fetched.
+    fn context_len(&self, context_uri: &str) -> Option<u32> {
+        if context_uri.ends_with(":collection") {
+            return self.library.liked.total;
+        }
+        match util::uri_kind(context_uri)? {
+            "playlist" => self
+                .library
+                .playlists
+                .get()?
+                .iter()
+                .find(|playlist| playlist.uri == context_uri)
+                .map(Playlist::track_total),
+            "album" => {
+                self.library
+                    .albums
+                    .items
+                    .iter()
+                    .find(|saved| saved.album.uri == context_uri)?
+                    .album
+                    .total_tracks
+            }
+            "show" => {
+                self.library
+                    .shows
+                    .items
+                    .iter()
+                    .find(|saved| saved.show.uri == context_uri)?
+                    .show
+                    .total_episodes
+            }
+            _ => None,
+        }
+    }
+
+    /// Pick the random starting row Spotify would otherwise miss when it
+    /// starts a context at track one. Loaded rows are preferred; a remote
+    /// device can use the library's total as a position when none are loaded.
+    fn shuffle_start(&self, context_uri: &str) -> (Option<String>, Option<u32>) {
+        if let Some(uri) = self.random_track_in(context_uri) {
+            return (Some(uri), None);
+        }
+        if matches!(self.target(), Target::Remote(Some(_)))
+            && let Some(len) = self.context_len(context_uri)
+            && len > 0
+        {
+            return (None, Some(rand::random_range(0..len)));
+        }
+        (None, None)
+    }
+
+    /// With `shuffle_first`, shuffle is turned on before playback starts,
+    /// in one ordered exchange: two independent requests race, and shuffle
+    /// sometimes lost.
     fn play_request(&mut self, request: PlayRequest, shuffle_first: bool) {
         // Shuffle is a mode the listener sets, not a property of one
         // context: once on, every play shuffles until it is turned off,
@@ -3494,7 +3638,7 @@ impl App {
             && request.uris.is_empty()
             && let Some(context) = request.context_uri.clone()
         {
-            request.offset_uri = self.random_track_in(&context);
+            (request.offset_uri, request.offset_position) = self.shuffle_start(&context);
         }
         let mut keys: Vec<String> = Vec::new();
         if let Some(context) = &request.context_uri {
@@ -3526,14 +3670,15 @@ impl App {
         self.set_play_pending(keys);
         if let Some(context) = request.context_uri.clone() {
             self.note_recent_context(&context);
-            // Light the page and the sidebar up at once; Spotify's own
-            // state takes a poll or two to say the same thing.
-            self.assumed_context = Some(AssumedContext {
-                uri: context,
-                shuffle: shuffle.then_some(true),
-                at: Instant::now(),
-            });
         }
+        // Light the page and sidebar up at once, or clear the previous
+        // context for a plain track list. Spotify's own state takes a poll or
+        // two to say the same thing.
+        self.assumed_context = Some(AssumedContext {
+            uri: request.context_uri.clone().unwrap_or_default(),
+            shuffle: shuffle.then_some(true),
+            at: Instant::now(),
+        });
         match self.target() {
             Target::Local if !self.local.connected => {
                 // The engine's session dropped (a sleep, a network change)
@@ -3543,15 +3688,9 @@ impl App {
             }
             Target::Local => {
                 self.queued_play = None;
-                self.backend.player(PlayerCommand::Load(LoadSpec {
-                    context_uri: request.context_uri.clone(),
-                    uris: request.uris.clone(),
-                    offset_uri: request.offset_uri.clone(),
-                    offset_index: request.offset_position,
-                    position_ms: request.position_ms,
-                    play: true,
-                    shuffle: shuffle.then_some(true),
-                }));
+                let load = local_load(&request, shuffle);
+                self.local_list = load.context_uri.is_none().then(|| load.uris.clone());
+                self.backend.player(PlayerCommand::Load(load));
                 self.optimistic_playing = Some((true, Instant::now()));
             }
             Target::Remote(Some(device_id)) => {
@@ -3877,6 +4016,7 @@ impl App {
                     position_ms: request.position_ms,
                     play: was_playing,
                     shuffle: None,
+                    autoplay: false,
                 }));
             }
             self.poll_remote_soon();
@@ -3994,13 +4134,9 @@ impl App {
                 }
             },
             Action::ShufflePlay(uri) => {
-                // librespot and the Web API both start an offsetless play
-                // at track one and only then shuffle what follows, so the
-                // first songs came out in order. Picking the random start
-                // here makes even the first song anyone's guess.
-                let mut request = PlayRequest::context(uri.clone());
-                request.offset_uri = self.random_track_in(&uri);
-                self.play_request(request, true);
+                // The random starting row is picked in `play_request`, so
+                // every shuffled entry point uses the same behavior.
+                self.play_request(PlayRequest::context(uri), true);
             }
             Action::TogglePlay => self.toggle_play(),
             Action::Next => match self.target() {
@@ -4209,7 +4345,11 @@ impl App {
             }
             Action::OpenInSpotify(uri) => {
                 if let Some(url) = util::open_spotify_url(&uri) {
-                    ctx.open_url(egui::OpenUrl::new_tab(url));
+                    std::thread::spawn(move || {
+                        if let Err(error) = crate::opener::open(&url) {
+                            log::warn!("unable to open {url}: {error}");
+                        }
+                    });
                 }
             }
             Action::Search(query) => {
@@ -4296,6 +4436,7 @@ impl App {
                     self.backend.send(Command::DiscoverReceivers);
                 }
             }
+            Action::CheckForUpdates => self.check_for_updates(true),
             Action::SettingsChanged => {
                 self.settings_dirty = true;
                 ctx.set_theme(match self.settings.theme {
@@ -4351,7 +4492,16 @@ impl App {
                     self.toast("Opening Spotify to enable playback here");
                 }
             }
-            Action::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Action::OpenUrl(url) => {
+                // Keep every external link on the same platform-aware path as
+                // sign-in, and off the interface thread while the launcher
+                // starts or waits for the user's browser.
+                std::thread::spawn(move || {
+                    if let Err(error) = crate::opener::open(&url) {
+                        log::warn!("unable to open {url}: {error}");
+                    }
+                });
+            }
             Action::InstallPluginUrl(url) => self.begin_plugin_install(url),
             Action::ResolvePluginLink(url) => self.begin_deep_link_install(url),
             Action::ConfirmPluginInstall => self.confirm_plugin_install(),
@@ -4371,6 +4521,9 @@ impl App {
             Action::ClearArtCache => match self.backend.art().clear_disk_cache() {
                 Ok(bytes) => {
                     ctx.forget_all_images();
+                    // Do not retain a path into the cache that was just
+                    // removed; the next frame can rediscover a fresh file.
+                    self.media_art = None;
                     self.toast(format!(
                         "Cleared {:.1} MB of artwork",
                         bytes as f64 / 1_048_576.0
@@ -4383,10 +4536,9 @@ impl App {
                 // `main` opens the other kind where each was last.
                 if self.settings.winamp_window {
                     self.winamp.remember_position();
-                } else {
-                    self.session_window_size = self.last_window_size.or(self.session_window_size);
-                    self.session_window_pos = self.last_window_pos.or(self.session_window_pos);
                 }
+                self.session_window_size = self.last_window_size.or(self.session_window_size);
+                self.session_window_pos = self.last_window_pos.or(self.session_window_pos);
                 self.settings.winamp_window = !self.settings.winamp_window;
                 self.settings_dirty = true;
                 self.switch_intent = true;
@@ -4406,6 +4558,7 @@ impl App {
             Action::ToggleWinampOnTop => {
                 self.settings.winamp_on_top = !self.settings.winamp_on_top;
                 self.settings_dirty = true;
+                self.push_winamp_level(ctx);
             }
             Action::ToggleWinampPlaylist => {
                 self.settings.playlist_open = !self.settings.playlist_open;
@@ -4436,7 +4589,8 @@ impl App {
                 }
             }
             Action::SetEqPreamp(gain_db) => {
-                self.settings.eq_preamp_db = gain_db.clamp(-crate::eq::RANGE_DB, 0.0);
+                self.settings.eq_preamp_db =
+                    gain_db.clamp(-crate::eq::RANGE_DB, crate::eq::RANGE_DB);
                 self.push_eq();
             }
             Action::ApplyEqPreset(index) => {
@@ -4471,9 +4625,22 @@ impl App {
                 self.settings_dirty = true;
                 self.winamp.analyser.reset();
             }
+            Action::CloseWindow => {
+                // A keyboard close request does not always produce another
+                // frame before eframe destroys the viewport. Record the
+                // outcome now so the outer loop can keep the app in the tray
+                // just like a native window close.
+                if self.hides_to_tray() {
+                    self.hide_intent = true;
+                } else {
+                    self.quit_requested = true;
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             Action::OpenSkinsFolder => {
                 let folder = self.dirs.skins_dir();
-                let opened = std::fs::create_dir_all(&folder).and_then(|()| open::that(&folder));
+                let opened =
+                    std::fs::create_dir_all(&folder).and_then(|()| crate::opener::open(&folder));
                 if let Err(error) = opened {
                     self.toast_error(format!("Couldn't open {}: {error}", folder.display()));
                 }
@@ -4560,7 +4727,7 @@ impl App {
         self.apply_actions(ctx);
         self.sync_media_controls();
 
-        if !self.settings.winamp_window {
+        if !self.settings.winamp_window && !self.switch_intent {
             if let Some(rect) = ctx.input(|input| input.viewport().inner_rect) {
                 self.last_window_size = Some([rect.width(), rect.height()]);
             }
@@ -4591,6 +4758,17 @@ impl App {
             // the outer loop recreates a window on demand. No compositor
             // tricks: this works the same on every desktop.
             self.hide_intent = true;
+        }
+    }
+
+    /// Reassert the mini-player's requested z-order after a native window
+    /// recreation. Some compositors apply the initial level before the
+    /// transparent window is ready and silently drop it.
+    fn push_winamp_level(&self, ctx: &egui::Context) {
+        if let Some(level) =
+            winamp_on_top_level(self.settings.winamp_window, self.settings.winamp_on_top)
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
         }
     }
 
@@ -4754,6 +4932,7 @@ pub fn engine_config(
         autoplay: settings.autoplay,
         gapless: settings.gapless,
         backend: settings.platform_backend(),
+        buffer_ms: settings.audio_buffer_ms,
         audio_device: settings
             .audio_device
             .clone()
@@ -4786,6 +4965,19 @@ pub fn percent_to_volume(percent: u8) -> u16 {
     ((u32::from(percent.min(100)) * u32::from(u16::MAX)) / 100) as u16
 }
 
+/// Map the mini-player preference to egui's native window-level setting.
+pub fn on_top_window_level(on_top: bool) -> egui::WindowLevel {
+    if on_top {
+        egui::WindowLevel::AlwaysOnTop
+    } else {
+        egui::WindowLevel::Normal
+    }
+}
+
+fn winamp_on_top_level(winamp_window: bool, on_top: bool) -> Option<egui::WindowLevel> {
+    winamp_window.then(|| on_top_window_level(on_top))
+}
+
 fn page_related_needs_load(pages: &HashMap<String, ArtistPage>, id: &str) -> bool {
     pages.get(id).is_some_and(|page| page.related.needs_load())
 }
@@ -4810,6 +5002,73 @@ fn friendly_page_error(error: &crate::api::ApiError) -> String {
         }
         _ => error.to_string(),
     }
+}
+
+/// Whether a Spotify-owned playlist is the personal shelf named by `term`.
+/// Artist mixes and radio playlists can contain the same words, so a broad
+/// substring match puts unrelated auto-generated lists on Made for you.
+fn is_made_for_you(name: &str, term: &str) -> bool {
+    let name = name.trim().to_lowercase();
+    let term = term.to_lowercase();
+    if name == term {
+        return true;
+    }
+    term == "daily mix"
+        && name
+            .strip_prefix("daily mix ")
+            .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Turn a one-track request into a track context so local autoplay can follow
+/// it. A multi-track request stays a plain list and is resumed explicitly
+/// when its final track ends.
+fn local_load(request: &PlayRequest, shuffle: bool) -> LoadSpec {
+    let single_song = request.context_uri.is_none()
+        && request.uris.len() == 1
+        && request.uris[0].contains(":track:");
+    if single_song {
+        return LoadSpec {
+            context_uri: Some(request.uris[0].clone()),
+            position_ms: request.position_ms,
+            play: true,
+            autoplay: false,
+            ..LoadSpec::default()
+        };
+    }
+    LoadSpec {
+        context_uri: request.context_uri.clone(),
+        uris: request.uris.clone(),
+        offset_uri: request.offset_uri.clone(),
+        offset_index: request.offset_position,
+        position_ms: request.position_ms,
+        play: true,
+        shuffle: shuffle.then_some(true),
+        autoplay: false,
+    }
+}
+
+/// The seed for Spotify's autoplay station when a plain local list reaches
+/// its final song. Manual stops, mid-list transitions, and disconnected
+/// sessions must not turn into an unexpected new play request.
+fn autoplay_seed(
+    list: Option<&[String]>,
+    autoplay: bool,
+    before: &LocalState,
+    after: &LocalState,
+) -> Option<String> {
+    if !autoplay
+        || !after.connected
+        || after.playback != Playback::Stopped
+        || before.playback != Playback::Playing
+    {
+        return None;
+    }
+    let track = before.track.as_ref()?;
+    if list?.last() != Some(&track.uri) || track.duration_ms == 0 {
+        return None;
+    }
+    let near_end = before.position_now().saturating_add(3_000) >= track.duration_ms;
+    near_end.then(|| track.uri.clone())
 }
 
 /// The bytes of a plugin's wasm, fetched on a worker thread so the
@@ -4884,6 +5143,122 @@ mod tests {
         assert_eq!(percent_to_volume(200), u16::MAX);
     }
 
+    #[test]
+    fn winamp_window_level_follows_the_on_top_setting() {
+        assert_eq!(
+            winamp_on_top_level(true, true),
+            Some(egui::WindowLevel::AlwaysOnTop)
+        );
+        assert_eq!(
+            winamp_on_top_level(true, false),
+            Some(egui::WindowLevel::Normal)
+        );
+        assert_eq!(winamp_on_top_level(false, true), None);
+    }
+
+    /// A song started outside a playlist must turn off the playlist's
+    /// sidebar light at once, even while Spotify still reports the old
+    /// context from before the click.
+    #[test]
+    fn a_plain_song_clears_the_sidebar_context() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+        app.assumed_context = Some(AssumedContext {
+            uri: "spotify:playlist:sidebar".into(),
+            shuffle: None,
+            at: Instant::now(),
+        });
+        app.remote = Some(RemoteSnapshot {
+            state: PlaybackState {
+                context: Some(crate::api::models::Context {
+                    uri: "spotify:playlist:sidebar".into(),
+                    ..Default::default()
+                }),
+                is_playing: true,
+                ..Default::default()
+            },
+            received_at: Instant::now(),
+        });
+
+        app.apply(
+            Action::PlayUris {
+                uris: vec!["spotify:track:standalone".into()],
+                index: 0,
+            },
+            &ctx,
+        );
+
+        assert_eq!(app.playing_context_uri(), None);
+    }
+
+    #[test]
+    fn a_close_request_without_a_tray_quits_the_process() {
+        let ctx = egui::Context::default();
+        let mut app = headless_app();
+
+        app.apply(Action::CloseWindow, &ctx);
+
+        assert!(app.quit_requested);
+        assert!(!app.hide_intent);
+    }
+
+    /// Switching from Winamp back to the main window preserves the main
+    /// window's size and position across the closing mini-window frame.
+    #[test]
+    fn closing_winamp_frame_does_not_overwrite_main_window_geometry() {
+        let mut app = headless_app();
+        app.last_window_size = Some([1024.0, 768.0]);
+        app.last_window_pos = Some([100.0, 150.0]);
+
+        let ctx = egui::Context::default();
+        app.actions.push(Action::ToggleWinampWindow);
+        app.apply_actions(&ctx);
+
+        assert!(app.settings.winamp_window);
+        assert!(app.switch_intent);
+        assert_eq!(app.session_window_size, Some([1024.0, 768.0]));
+        assert_eq!(app.session_window_pos, Some([100.0, 150.0]));
+
+        app.attach(&ctx);
+        assert!(!app.switch_intent);
+
+        app.actions.push(Action::ToggleWinampWindow);
+        let mut raw_input = egui::RawInput::default();
+        let mini_rect = egui::Rect::from_min_size(egui::pos2(50.0, 50.0), egui::vec2(275.0, 116.0));
+        let viewport = raw_input
+            .viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default();
+        viewport.inner_rect = Some(mini_rect);
+        viewport.outer_rect = Some(mini_rect);
+        let mut output = ctx.run_ui(raw_input, |ui| app.frame_ui(ui));
+        output.textures_delta.clear();
+
+        assert!(!app.settings.winamp_window);
+        assert!(app.switch_intent);
+        assert_eq!(app.last_window_size, Some([1024.0, 768.0]));
+        assert_eq!(app.last_window_pos, Some([100.0, 150.0]));
+        assert_eq!(app.session_window_size, Some([1024.0, 768.0]));
+        assert_eq!(app.session_window_pos, Some([100.0, 150.0]));
+
+        let main_ctx = egui::Context::default();
+        let mut output = main_ctx.run_ui(Default::default(), |_ui| {
+            app.attach(&main_ctx);
+        });
+        output.textures_delta.clear();
+        let commands = &output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .expect("the root viewport")
+            .commands;
+        assert!(commands.contains(&egui::ViewportCommand::InnerSize(egui::vec2(1024.0, 768.0))));
+        assert!(
+            commands.contains(&egui::ViewportCommand::OuterPosition(egui::pos2(
+                100.0, 150.0
+            )))
+        );
+    }
+
     fn headless_app() -> App {
         let root = std::env::temp_dir().join(format!("woofer-volume-test-{}", std::process::id()));
         let dirs = AppDirs {
@@ -4902,6 +5277,93 @@ mod tests {
         );
         app.local_ready = true;
         app
+    }
+
+    #[test]
+    fn made_for_you_keeps_named_shelves_and_drops_artist_mixes() {
+        assert!(is_made_for_you("Discover Weekly", "Discover Weekly"));
+        assert!(is_made_for_you("release radar", "Release Radar"));
+        assert!(is_made_for_you("Daily Mix 3", "Daily Mix"));
+        assert!(is_made_for_you("Daily Mix", "Daily Mix"));
+        assert!(!is_made_for_you("Discover Weekly Mix", "Discover Weekly"));
+        assert!(!is_made_for_you(
+            "This Is Discover Weekly",
+            "Discover Weekly"
+        ));
+        assert!(!is_made_for_you("Daily Mix Radio", "Daily Mix"));
+        assert!(!is_made_for_you("Daily Mix 3", "Discover Weekly"));
+    }
+
+    #[test]
+    fn local_single_tracks_get_a_context_for_autoplay() {
+        let one = local_load(&PlayRequest::tracks(vec!["spotify:track:a".into()]), false);
+        assert_eq!(one.context_uri.as_deref(), Some("spotify:track:a"));
+        assert!(one.uris.is_empty());
+        assert!(!one.autoplay);
+
+        let two = local_load(
+            &PlayRequest::tracks(vec!["spotify:track:a".into(), "spotify:track:b".into()])
+                .starting_at_index(1),
+            true,
+        );
+        assert_eq!(two.context_uri, None);
+        assert_eq!(two.uris.len(), 2);
+        assert_eq!(two.offset_index, Some(1));
+        assert_eq!(two.shuffle, Some(true));
+
+        let episode = local_load(
+            &PlayRequest::tracks(vec!["spotify:episode:e".into()]),
+            false,
+        );
+        assert_eq!(episode.context_uri, None);
+        assert_eq!(episode.uris.len(), 1);
+    }
+
+    #[test]
+    fn local_list_autoplay_only_follows_a_near_end_stop() {
+        let track = |uri: &str| {
+            Some(crate::player::LocalTrack {
+                uri: uri.into(),
+                duration_ms: 200_000,
+                ..Default::default()
+            })
+        };
+        let playing = LocalState {
+            playback: Playback::Playing,
+            track: track("spotify:track:last"),
+            position_ms: 198_500,
+            connected: true,
+            ..LocalState::default()
+        };
+        let stopped = LocalState {
+            playback: Playback::Stopped,
+            track: track("spotify:track:last"),
+            connected: true,
+            ..LocalState::default()
+        };
+        let list = vec![
+            "spotify:track:first".to_string(),
+            "spotify:track:last".to_string(),
+        ];
+
+        assert_eq!(
+            autoplay_seed(Some(&list), true, &playing, &stopped).as_deref(),
+            Some("spotify:track:last")
+        );
+        assert_eq!(autoplay_seed(Some(&list), false, &playing, &stopped), None);
+        assert_eq!(autoplay_seed(None, true, &playing, &stopped), None);
+
+        let mid_song = LocalState {
+            position_ms: 60_000,
+            ..playing.clone()
+        };
+        assert_eq!(autoplay_seed(Some(&list), true, &mid_song, &stopped), None);
+
+        let dropped = LocalState {
+            connected: false,
+            ..stopped
+        };
+        assert_eq!(autoplay_seed(Some(&list), true, &playing, &dropped), None);
     }
 
     /// A Free account is told once per sign-in that nothing will play;

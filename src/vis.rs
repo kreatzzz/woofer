@@ -105,30 +105,35 @@ impl AudioTap {
     }
 }
 
-/// A sink that runs the equalizer over every sample and hands the tap
-/// the result on its way to the real one, so the bars show what is heard.
+/// A sink that runs the equalizer and final limiter over every sample and
+/// hands the tap the shaped signal on its way to the real sink.
 pub struct Tapped {
     inner: Box<dyn Sink>,
     tap: Arc<AudioTap>,
     eq: crate::eq::Processor,
-    /// Undoes the volume the player already applied to the samples, so the
-    /// bars show the music, not the volume knob. `None` when the sink
-    /// applies the volume itself, after the tap.
-    applied_volume: Option<Box<dyn VolumeGetter + Send>>,
+    /// The shared volume getter, either applied here or by the output sink.
+    volume: Box<dyn VolumeGetter + Send>,
+    /// Whether this wrapper applies volume to samples before passing them on.
+    applies_volume: bool,
+    /// The final ceiling, after EQ and before the output device.
+    limiter: crate::limiter::Limiter,
 }
 
 impl Tapped {
     pub fn new(
         inner: Box<dyn Sink>,
         tap: Arc<AudioTap>,
-        applied_volume: Option<Box<dyn VolumeGetter + Send>>,
+        volume: Box<dyn VolumeGetter + Send>,
+        applies_volume: bool,
         eq: crate::eq::SharedEq,
     ) -> Self {
         Self {
             inner,
             tap,
             eq: crate::eq::Processor::new(eq),
-            applied_volume,
+            volume,
+            applies_volume,
+            limiter: crate::limiter::Limiter::new(f64::from(SAMPLE_RATE)),
         }
     }
 }
@@ -147,15 +152,25 @@ impl Sink for Tapped {
         let packet = match packet {
             AudioPacket::Samples(mut samples) => {
                 self.eq.process(&mut samples);
-                let gain = self.applied_volume.as_ref().map_or(1.0, |volume| {
-                    let attenuation = volume.attenuation_factor() as f32;
-                    if attenuation > 0.001 {
-                        1.0 / attenuation
-                    } else {
-                        1.0
+                // The tap is before the volume stage so visualizer output is
+                // independent of the volume knob.
+                self.tap.push(&samples, 1.0);
+                let attenuation = self.volume.attenuation_factor();
+                if self.applies_volume {
+                    for sample in &mut samples {
+                        *sample *= attenuation;
                     }
-                });
-                self.tap.push(&samples, gain);
+                }
+                let full_scale = if self.applies_volume {
+                    Some(1.0)
+                } else if attenuation > f64::EPSILON {
+                    Some(1.0 / attenuation)
+                } else {
+                    None
+                };
+                if let Some(full_scale) = full_scale {
+                    self.limiter.process(&mut samples, full_scale);
+                }
                 AudioPacket::Samples(samples)
             }
             raw => raw,

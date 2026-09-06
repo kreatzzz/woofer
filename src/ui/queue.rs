@@ -46,6 +46,13 @@ pub fn side_panel(app: &mut App, ui: &mut egui::Ui) {
                 .inner_margin(Margin::symmetric(12, 12)),
         );
     let response = panel.show(ui, |ui| {
+        let window_controls = super::window_controls_reservation(
+            ui.ctx(),
+            app.show_queue_panel,
+            app.show_lyrics_panel,
+            ui.available_width(),
+        );
+        ui.add_space(window_controls.queue_top);
         ui.horizontal(|ui| {
             ui.add_space(4.0);
             theme::text(ui, "Queue", theme::bold(18.0), palette.text);
@@ -122,6 +129,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
                 added_by: None,
                 show_added_by: false,
                 compact,
+                thin: false,
                 shift: 0.0,
             },
         );
@@ -166,6 +174,7 @@ fn contents(app: &mut App, ui: &mut egui::Ui, compact: bool) {
                 added_by: None,
                 show_added_by: false,
                 compact,
+                thin: false,
                 shift: 0.0,
             },
         );

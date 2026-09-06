@@ -29,7 +29,7 @@ use crate::util;
 use crate::vis;
 use crate::winamp::{MAX_SCALE, WinampState};
 
-use super::widgets::SliderEvent;
+use super::widgets::{SliderEvent, wheel_notches};
 
 mod equalizer;
 mod pixel_text;
@@ -433,7 +433,10 @@ fn full_window(
     if view
         .interact(layout::ABOUT, "about", Sense::click())
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Back to the big window (Ctrl+M)")
+        .on_hover_text(super::keys::platform_shortcut(
+            "Back to the big window (Ctrl+M)",
+            "Back to the big window (Cmd+Shift+M)",
+        ))
         .clicked()
     {
         app.actions.push(Action::ToggleWinampWindow);
@@ -473,7 +476,10 @@ fn shade_bar(
     }
     let unit = view.unit;
     egui::Popup::context_menu(&title).show(|ui| options_menu(app, ui, unit));
-    let big_window = "Back to the big window (Ctrl+M)";
+    let big_window = super::keys::platform_shortcut(
+        "Back to the big window (Ctrl+M)",
+        "Back to the big window (Cmd+Shift+M)",
+    );
     if view
         .button(
             layout::OPTIONS_BUTTON,
@@ -636,8 +642,11 @@ fn title_bar(app: &mut App, view: &mut View, ctx: &egui::Context, focused: bool)
     egui::Popup::context_menu(&title).show(|ui| options_menu(app, ui, unit));
     // The logo and the close button lead back to the big window: the mini
     // player is a way of looking at the same app, not a second one to
-    // close. Quitting is in the menu and Ctrl+Q.
-    let big_window = "Back to the big window (Ctrl+M)";
+    // close. Quitting is in the menu and through the platform shortcut.
+    let big_window = super::keys::platform_shortcut(
+        "Back to the big window (Ctrl+M)",
+        "Back to the big window (Cmd+Shift+M)",
+    );
     if view
         .button(
             layout::OPTIONS_BUTTON,
@@ -966,6 +975,9 @@ fn time_display(app: &mut App, view: &mut View, now: Option<&NowPlaying>, time: 
             }
             view.sprite(sprites::NUMS_EX_BLANK, layout::MINUS_EX);
         } else {
+            for cell in layout::TIME_DIGITS {
+                view.sprite(sprites::NUMBERS_BLANK, cell);
+            }
             view.sprite(sprites::NUMBERS_NO_MINUS, layout::MINUS);
         }
     };
@@ -1067,8 +1079,89 @@ fn marquee(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
         app.winamp.balance_preview,
         notice.as_deref(),
     );
-    let shown = app.winamp.marquee(&text, Instant::now());
-    view.text(&shown, layout::MARQUEE);
+    let (shown, offset) = app.winamp.marquee(&text, Instant::now());
+    if text.chars().all(font::covered) {
+        view.text(&shown, layout::MARQUEE);
+    } else {
+        // The skin's bitmap font cannot represent every script, so draw the
+        // complete line with the pixel fallback and slide a cropped strip.
+        marquee_pixels(app, view, &text, offset);
+    }
+}
+
+/// A still line of text drawn from the system pixel face, for skin areas whose
+/// bitmap font cannot say it. The ink is cropped before scaling so glyphs fill
+/// the six-pixel bar instead of inheriting font-metric padding.
+fn pixel_line(app: &mut App, view: &mut View, text: &str, area: Area) {
+    let ctx = view.ui.ctx().clone();
+    let line = app.winamp.playlist_text.line(&ctx, text);
+    let (texture, width, height) = (line.texture.id(), line.width, line.height);
+    let (ink_top, ink_height) = (line.ink_top, line.ink_height);
+    if width == 0 || ink_height == 0 {
+        return;
+    }
+    let unit = view.unit;
+    let scale = (area.height as f32 * unit) / ink_height as f32;
+    let drawn = (width as f32 * scale).min(area.width as f32 * unit);
+    let rect = view.rect(area);
+    let colour = view.skin.playlist.normal;
+    let tint = Color32::from_rgb(colour[0], colour[1], colour[2]);
+    let image = egui::Rect::from_min_size(rect.min, vec2(drawn, area.height as f32 * unit));
+    let uv_right = drawn / (width as f32 * scale);
+    let uv = egui::Rect::from_min_max(
+        egui::pos2(0.0, ink_top as f32 / height as f32),
+        egui::pos2(uv_right, (ink_top + ink_height) as f32 / height as f32),
+    );
+    view.ui.painter().image(texture, image, uv, tint);
+}
+
+/// The marquee drawn from the system pixel face, with a looping strip for
+/// long text and the same timing as the skin bitmap marquee.
+fn marquee_pixels(app: &mut App, view: &mut View, text: &str, offset: usize) {
+    let area = layout::MARQUEE;
+    let scrolling = app.winamp.marquee_scrolling();
+    let strip = if scrolling {
+        crate::winamp::marquee_strip(text)
+    } else {
+        text.to_string()
+    };
+    let ctx = view.ui.ctx().clone();
+    let line = app.winamp.playlist_text.line(&ctx, &strip);
+    let (texture, width, height) = (line.texture.id(), line.width, line.height);
+    let (ink_top, ink_height) = (line.ink_top, line.ink_height);
+    if width == 0 || ink_height == 0 {
+        return;
+    }
+    let unit = view.unit;
+    let scale = (area.height as f32 * unit) / ink_height as f32;
+    let strip_width = width as f32 * scale;
+    let rect = view.rect(area);
+    let painter = view.ui.painter_at(rect.intersect(view.ui.clip_rect()));
+    let colour = view.skin.playlist.normal;
+    let tint = Color32::from_rgb(colour[0], colour[1], colour[2]);
+    let offset_px = if scrolling && strip_width > 0.0 {
+        (offset as f32 * 5.0 * unit) % strip_width
+    } else {
+        0.0
+    };
+    let uv = egui::Rect::from_min_max(
+        egui::pos2(0.0, ink_top as f32 / height as f32),
+        egui::pos2(1.0, (ink_top + ink_height) as f32 / height as f32),
+    );
+    for copy in 0..2 {
+        let left = rect.left() - offset_px + copy as f32 * strip_width;
+        if left > rect.right() {
+            break;
+        }
+        let image = egui::Rect::from_min_size(
+            egui::pos2(left, rect.top()),
+            vec2(strip_width, area.height as f32 * unit),
+        );
+        painter.image(texture, image, uv, tint);
+        if !scrolling {
+            break;
+        }
+    }
 }
 
 /// The bitrate and sample rate, as far as they are known: the bitrate is
@@ -1090,6 +1183,11 @@ fn sliders(app: &mut App, view: &mut View, now: Option<&NowPlaying>) {
         .map(|now| now.volume_percent)
         .unwrap_or_else(|| crate::app::volume_to_percent(app.local.volume));
     let (response, event) = view.slider(layout::VOLUME, "volume", 14);
+    let notches = wheel_notches(view.ui, &response);
+    if notches != 0 {
+        let level = (i32::from(volume) + 5 * notches).clamp(0, 100);
+        app.actions.push(Action::SetVolume(level as u8));
+    }
     match event {
         SliderEvent::Dragging(value) => {
             app.volume_preview = Some(value);

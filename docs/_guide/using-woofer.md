@@ -139,8 +139,8 @@ saves the queue as a new one, and REM only explains that no app can take
 from Spotify's queue. Notices that the big window shows as toasts scroll
 through the marquee here. **EQ** opens the equalizer between the player and the playlist: Winamp's
 ten bands and its presets, shaping the music played on this computer (a
-speaker across the room plays what Spotify sends it). The preamp only
-turns down, and AUTO, which loaded a preset per song, stays off. The same
+speaker across the room plays what Spotify sends it). The preamp can turn
+down or boost, and AUTO, which loaded a preset per song, stays off. The same
 equalizer is in Settings with its curve drawn out. The X and both logos
 of the main window bring back the big window; its shade button, or a
 double-click on the title bar, rolls it up to a bar with the time, a small
@@ -182,6 +182,7 @@ Connect devices and conflicting media-key handlers.
 | `Shift+←` / `Shift+→` | Seek 10 seconds |
 | `Ctrl+↑` / `Ctrl+↓` | Volume |
 | `M` | Mute |
+| `B` | Like or unlike the playing song |
 | `S` / `R` | Shuffle / cycle repeat |
 | `Q` | Queue panel |
 | `Ctrl+F` or `/` | Search |
@@ -191,6 +192,7 @@ Connect devices and conflicting media-key handlers.
 | `Ctrl+Shift+A` / `Ctrl+Shift+B` | Playing artist / album |
 | `Ctrl+M` | Winamp mini player |
 | `Ctrl+,` | Settings |
+| `Ctrl+W` | Close the window |
 | `Ctrl+/` or `?` | All shortcuts |
 | `Ctrl+Q` | Quit |
 

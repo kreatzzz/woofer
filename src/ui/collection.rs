@@ -274,6 +274,14 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
     let sort = app.table_sorts.get(&table.page).copied();
     let visible = view_indices(table.items, &needle, sort);
 
+    let thin = app.settings.tracklist_compact;
+    let show_cover = !thin && table.show_cover;
+    let row_height = if thin {
+        theme::THIN_ROW_HEIGHT
+    } else {
+        theme::ROW_HEIGHT
+    };
+
     if !table.items.is_empty()
         && let Some(column) = widgets::table_header(
             ui,
@@ -281,7 +289,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             table.show_album,
             table.show_added,
             table.show_added_by,
-            table.show_cover,
+            show_cover,
             sort,
         )
     {
@@ -361,11 +369,11 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
             .ctx()
             .pointer_latest_pos()
             .filter(|pos| ui.clip_rect().contains(*pos))?;
-        let row = (pos.y - list_top) / theme::ROW_HEIGHT;
+        let row = (pos.y - list_top) / row_height;
         (row >= 0.0 && row <= visible.len() as f32)
             .then(|| (row.round() as usize).min(visible.len()))
     });
-    widgets::virtual_rows(ui, visible.len(), theme::ROW_HEIGHT, |ui, row| {
+    widgets::virtual_rows(ui, visible.len(), row_height, |ui, row| {
         let index = visible[row];
         let (item, added_at, added_by) = &table.items[index];
         // Neighbours part at the slot the dragged row would land in, the
@@ -387,12 +395,13 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
                 number: Some(if sorted { row + 1 } else { index + 1 }),
                 item,
                 context: &context,
-                show_cover: table.show_cover,
+                show_cover,
                 show_album: table.show_album,
                 added_at: added_at.as_deref(),
                 added_by: added_by.as_deref(),
                 show_added_by: table.show_added_by,
                 compact: false,
+                thin,
                 shift,
             },
         );
@@ -400,7 +409,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
     if let Some(slot) = move_slot {
         // A line in the gap the rows opened, so the eye lands where the
         // row will.
-        let y = list_top + slot as f32 * theme::ROW_HEIGHT;
+        let y = list_top + slot as f32 * row_height;
         ui.painter().hline(
             ui.max_rect().x_range().shrink(8.0),
             y,

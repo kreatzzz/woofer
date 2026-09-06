@@ -12,18 +12,13 @@ use super::widgets::{SliderEvent, thin_slider};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
-    let tint = app.now_playing_tint();
-    let fill = match tint {
-        Some(tint) => super::blend(palette.panel, tint, 0.12),
-        None => palette.panel,
-    };
     egui::Panel::bottom("player-bar")
         .exact_size(theme::PLAYER_BAR_HEIGHT)
         .resizable(false)
         .show_separator_line(false)
         .frame(
             Frame::new()
-                .fill(fill)
+                .fill(palette.panel)
                 .inner_margin(Margin::symmetric(16, 0)),
         )
         .show(ui, |ui| {
@@ -384,6 +379,7 @@ fn transport(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>, region:
         fraction,
         slider_width,
         palette.accent,
+        None,
     ) {
         SliderEvent::Dragging(value) => app.seek_preview = Some(value),
         SliderEvent::Committed(value) => {
@@ -421,6 +417,7 @@ fn extras(app: &mut App, ui: &mut egui::Ui, now: Option<&NowPlaying>) {
         shown as f32 / 100.0,
         92.0,
         palette.accent,
+        Some(0.05),
     ) {
         SliderEvent::Dragging(value) => {
             app.volume_preview = Some(value);

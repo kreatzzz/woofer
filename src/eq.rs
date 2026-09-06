@@ -2,10 +2,13 @@
 //!
 //! librespot has no equalizer, so this is Woofer's own: a peaking
 //! filter per band (the textbook second-order kind) run over every sample
-//! of local playback, and a preamp that only ever turns down, since the
-//! app does not boost past 0 dB. The settings live behind a mutex the
-//! window writes and the player's thread reads once per packet; the
-//! filters are rebuilt only when something changed.
+//! of local playback, and a preamp that can boost or cut by twelve decibels.
+//! The settings live behind a mutex the window writes and the player's thread
+//! reads once per packet; the filters are rebuilt only when something changed.
+//!
+//! Boosted samples stay in floating point here. The final local-playback
+//! wrapper applies the volume-aware limiter after the equalizer, so a boost at
+//! a quiet volume is not irreversibly clipped before the listener can use it.
 
 use std::sync::{Arc, Mutex};
 
@@ -30,7 +33,7 @@ const FLAT: f32 = 0.05;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EqSettings {
     pub on: bool,
-    /// Never above zero.
+    /// Twelve decibels either way, like the bands.
     pub preamp_db: f32,
     pub bands_db: [f32; 10],
     /// -1 is all left, 1 all right.
@@ -53,7 +56,7 @@ impl Default for EqSettings {
 impl EqSettings {
     /// The same settings kept within what the equalizer can do.
     pub fn clamped(mut self) -> Self {
-        self.preamp_db = self.preamp_db.clamp(-RANGE_DB, 0.0);
+        self.preamp_db = self.preamp_db.clamp(-RANGE_DB, RANGE_DB);
         for band in &mut self.bands_db {
             *band = band.clamp(-RANGE_DB, RANGE_DB);
         }
@@ -283,7 +286,10 @@ impl Processor {
                 frame[1] = middle;
             }
             for (sample, gain) in frame.iter_mut().zip(gains) {
-                *sample = (*sample * gain).clamp(-1.0, 1.0);
+                // Keep the ceiling in the final audio stage, after the
+                // output volume is known. Clipping here would destroy EQ
+                // headroom that a quiet output could safely preserve.
+                *sample *= gain;
             }
         }
     }
@@ -342,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn off_or_flat_changes_nothing_and_the_preamp_only_cuts() {
+    fn off_or_flat_changes_nothing_and_the_preamp_can_boost_or_cut() {
         let shared = shared();
         let mut processor = Processor::new(shared.clone());
         let original = tone(440.0, 1024);
@@ -358,7 +364,8 @@ mod tests {
         shared.lock().unwrap().preamp_db = 6.0;
         let mut samples = original.clone();
         processor.process(&mut samples);
-        assert_eq!(samples, original, "a preamp above zero was applied");
+        let ratio = rms(&samples) / rms(&original);
+        assert!((20.0 * ratio.log10() - 6.0).abs() < 0.1);
 
         shared.lock().unwrap().preamp_db = -6.0;
         let mut samples = original.clone();
@@ -380,7 +387,7 @@ mod tests {
             ..settings
         }
         .clamped();
-        assert_eq!(clamped.preamp_db, 0.0);
+        assert_eq!(clamped.preamp_db, 4.0);
         assert!(clamped.bands_db.iter().all(|band| *band == RANGE_DB));
     }
 

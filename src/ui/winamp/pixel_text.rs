@@ -29,6 +29,10 @@ pub struct Line {
     pub texture: TextureHandle,
     pub width: u32,
     pub height: u32,
+    /// The rows that carry ink. Font metrics include padding above and below;
+    /// marquee fallback text scales this crop to fill the skin's bar.
+    pub ink_top: u32,
+    pub ink_height: u32,
 }
 
 /// The faces, in the order they are asked: Arial or what stands in for
@@ -41,6 +45,7 @@ static FACES: LazyLock<Vec<(&'static [u8], u32)>> = LazyLock::new(|| {
         Some(face) => vec![(&face.bytes, face.index)],
         None => vec![(include_bytes!("../../../assets/fonts/InterVariable.ttf"), 0)],
     };
+    faces.push((include_bytes!("../../../assets/fonts/NotoEmoji.ttf"), 0));
     for fallback in crate::system_fonts::fallbacks() {
         faces.push((&fallback.bytes, fallback.index));
     }
@@ -133,6 +138,14 @@ impl PixelText {
         if !self.lines.contains_key(text) {
             let image = self.rasterise(text);
             let [width, height] = image.size;
+            let inked: Vec<u32> = (0..height)
+                .filter(|y| (0..width).any(|x| image[(x, *y)].a() > 0))
+                .map(|y| y as u32)
+                .collect();
+            let (ink_top, ink_height) = match (inked.first(), inked.last()) {
+                (Some(first), Some(last)) => (*first, last - first + 1),
+                _ => (0, height as u32),
+            };
             let texture =
                 ctx.load_texture(format!("pledit:{text}"), image, TextureOptions::NEAREST);
             self.lines.insert(
@@ -141,6 +154,8 @@ impl PixelText {
                     texture,
                     width: width as u32,
                     height: height as u32,
+                    ink_top,
+                    ink_height,
                 },
             );
         }

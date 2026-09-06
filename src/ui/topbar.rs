@@ -50,14 +50,35 @@ fn nav_button(
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     let width = ui.available_width();
+    let window_controls = super::window_controls_reservation(
+        ui.ctx(),
+        app.show_queue_panel,
+        app.show_lyrics_panel,
+        width,
+    );
+    let inset = theme::titlebar_inset(ui.ctx());
+    let content_height = theme::TOP_BAR_HEIGHT + inset;
+    let height = content_height + window_controls.topbar_top;
+    super::titlebar_drag(
+        ui,
+        egui::Rect::from_min_size(ui.cursor().min, vec2(width, height)),
+    );
+    ui.add_space(window_controls.topbar_top);
     ui.allocate_ui_with_layout(
-        vec2(width, theme::TOP_BAR_HEIGHT),
+        vec2(width, content_height),
         Layout::left_to_right(Align::Center),
         |ui| {
             ui.add_space(super::widgets::PAGE_PADDING);
             ui.spacing_mut().item_spacing.x = 8.0;
             if !app.settings.sidebar_visible {
-                if nav_button(ui, &palette, Icon::PanelLeft, true, "Show sidebar (Cmd+B)").clicked()
+                if nav_button(
+                    ui,
+                    &palette,
+                    Icon::PanelLeft,
+                    true,
+                    super::keys::platform_shortcut("Show sidebar (Ctrl+B)", "Show sidebar (Cmd+B)"),
+                )
+                .clicked()
                 {
                     app.actions.push(Action::ToggleSidebar);
                 }
@@ -84,7 +105,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
             ui.add_space(8.0);
 
-            let search_width = (ui.available_width() * 0.5).clamp(200.0, 440.0);
+            let search_room = (ui.available_width() - window_controls.topbar_width).max(0.0);
+            let search_width = (search_room * 0.5).clamp(200.0, 440.0);
             let id = egui::Id::new("global-search");
             let before = app.search.query.clone();
             let response = super::widgets::search_field(
@@ -117,6 +139,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add_space(window_controls.topbar_width);
                 ui.add_space(super::widgets::PAGE_PADDING);
                 // Account.
                 let (name, avatar) = app
@@ -242,7 +265,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     19.0,
                     palette.secondary,
                     palette.text,
-                    "Winamp mini player (Ctrl+M)",
+                    super::keys::platform_shortcut(
+                        "Winamp mini player (Ctrl+M)",
+                        "Winamp mini player (Cmd+Shift+M)",
+                    ),
                 )
                 .clicked()
                 {
@@ -257,43 +283,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 {
                     theme::spinner(ui, 15.0, palette.secondary)
                         .on_hover_text("Talking to Spotify…");
-                }
-                // Where playback is.
-                if let Some(now) = app.now_playing()
-                    && !now.local
-                {
-                    let label = format!(
-                        "Playing on {}",
-                        now.device_name.unwrap_or_else(|| "another device".into())
-                    );
-                    let galley =
-                        ui.painter()
-                            .layout_no_wrap(label, theme::medium(12.5), palette.accent);
-                    let size = galley.size() + vec2(28.0, 12.0);
-                    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-                    ui.painter().rect_filled(
-                        rect,
-                        CornerRadius::same(14),
-                        palette.accent.gamma_multiply(0.16),
-                    );
-                    let icon_rect = egui::Rect::from_center_size(
-                        pos2(rect.left() + 14.0, rect.center().y),
-                        Vec2::splat(13.0),
-                    );
-                    Icon::Speaker
-                        .image(palette.accent, 13.0)
-                        .paint_at(ui, icon_rect);
-                    ui.painter().galley(
-                        pos2(rect.left() + 24.0, rect.center().y - galley.size().y / 2.0),
-                        galley,
-                        palette.accent,
-                    );
-                    if response
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
-                        app.actions.push(Action::ToggleDevicesPopup);
-                    }
                 }
                 // A newer release. Most people never visit a releases page,
                 // so the app says so, quietly, until they do.

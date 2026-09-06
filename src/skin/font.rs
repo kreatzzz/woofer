@@ -31,6 +31,12 @@ pub fn cell(character: char) -> (u32, u32) {
     cell('?')
 }
 
+/// Whether the bitmap font has a real cell for the character rather than the
+/// question mark it uses as its fallback.
+pub fn covered(character: char) -> bool {
+    character == '?' || cell(character) != cell('?')
+}
+
 /// The sprite for a character.
 pub fn glyph(character: char) -> Sprite {
     let (row, column) = cell(character);

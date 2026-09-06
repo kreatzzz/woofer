@@ -537,6 +537,10 @@ impl MiniWindow {
     }
 }
 
+const fn main_window_decorated(on_windows: bool) -> bool {
+    !on_windows
+}
+
 fn native_options(fullscreen: bool, mini: Option<MiniWindow>) -> eframe::NativeOptions {
     let icon = if cfg!(target_os = "macos") {
         // macOS takes the dock icon from the bundle's .icns, which is the
@@ -552,11 +556,7 @@ fn native_options(fullscreen: bool, mini: Option<MiniWindow>) -> eframe::NativeO
         .with_icon(icon);
     let viewport = match mini {
         Some(mini) => {
-            let level = if mini.on_top {
-                egui::WindowLevel::AlwaysOnTop
-            } else {
-                egui::WindowLevel::Normal
-            };
+            let level = app::on_top_window_level(mini.on_top);
             // See-through, for skins that are not rectangles; the skin
             // paints every pixel that is the window.
             let viewport = viewport
@@ -574,6 +574,14 @@ fn native_options(fullscreen: bool, mini: Option<MiniWindow>) -> eframe::NativeO
             }
         }
         None => viewport
+            // The native macOS traffic lights float over full-size content;
+            // the top bar reserves their space below.
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false)
+            // Windows uses Woofer's own caption buttons so the surface can
+            // keep the same edge-to-edge layout as the other platforms.
+            .with_decorations(main_window_decorated(cfg!(windows)))
             .with_inner_size([1240.0, 800.0])
             .with_min_inner_size([760.0, 520.0])
             .with_fullscreen(fullscreen),
@@ -682,11 +690,13 @@ impl eframe::App for Shell {
                     MenuCommand::Sidebar => Action::ToggleSidebar,
                     MenuCommand::Queue => Action::ToggleQueuePanel,
                     MenuCommand::Settings => Action::Open(Page::Settings),
+                    MenuCommand::CheckForUpdates => Action::CheckForUpdates,
                     MenuCommand::Shortcuts => Action::ShowDialog(Dialog::Shortcuts),
                     MenuCommand::Back => Action::Back,
                     MenuCommand::Forward => Action::Forward,
                     MenuCommand::OpenRepo => {
-                        ctx.open_url(egui::OpenUrl::new_tab("https://github.com/kreatzzz/woofer"));
+                        app.actions
+                            .push(Action::OpenUrl("https://github.com/kreatzzz/woofer".into()));
                         continue;
                     }
                     // Editing goes through egui, which owns the text field

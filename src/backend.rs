@@ -432,8 +432,11 @@ pub enum Command {
     DiscoverReceivers,
     /// Hand the account to a receiver so it joins Spotify Connect.
     ActivateReceiver(Box<crate::zeroconf::Receiver>),
-    /// Ask GitHub whether a newer release exists.
-    CheckForUpdates,
+    /// Ask GitHub whether a newer release exists. Manual checks report every
+    /// outcome; scheduled checks only announce a newer release.
+    CheckForUpdates {
+        manual: bool,
+    },
     /// The words of a track, from the built-in flow and then the lyrics
     /// chain behind it.
     Lyrics(Box<LyricsRequest>),
@@ -501,10 +504,10 @@ pub enum Event {
         color: [u8; 3],
     },
     Error(String),
-    /// A newer release than this build exists.
-    UpdateAvailable {
-        version: String,
-        url: String,
+    /// GitHub answered an update check, or the request failed.
+    UpdateChecked {
+        manual: bool,
+        result: Result<Option<crate::updates::Release>, String>,
     },
     /// The words of a track, or `None` when nobody has transcribed it.
     Lyrics {
@@ -850,7 +853,7 @@ impl Worker {
                 Command::Reconnect => self.reconnect_engine(),
                 Command::DiscoverReceivers => self.discover_receivers(),
                 Command::ActivateReceiver(receiver) => self.activate_receiver(*receiver),
-                Command::CheckForUpdates => self.check_for_updates(),
+                Command::CheckForUpdates { manual } => self.check_for_updates(manual),
                 Command::Lyrics(request) => self.fetch_lyrics(*request),
                 Command::LoadPlaylistCache { id } => self.load_playlist_cache(id),
                 Command::StorePlaylistCache {
@@ -1053,9 +1056,14 @@ impl Worker {
                 url: flow.url.clone(),
             }));
         }
-        if let Err(error) = open::that_detached(&flow.url) {
-            log::warn!("unable to open a browser: {error}");
-        }
+        // Wait for the launcher process to finish. Dropping a detached
+        // `xdg-open` child leaves a zombie behind on Linux until Woofer exits.
+        let browser_url = flow.url.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = crate::opener::open(&browser_url) {
+                log::warn!("unable to open a browser: {error}");
+            }
+        });
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
@@ -1180,6 +1188,7 @@ impl Worker {
                 uris: vec![interrupted.uri],
                 position_ms: interrupted.position_ms,
                 play: interrupted.playing,
+                autoplay: false,
                 ..LoadSpec::default()
             });
             engine.shutdown();
@@ -1220,9 +1229,15 @@ impl Worker {
         let (cancel_tx, cancel_rx) = watch::channel(false);
         self.cancel_signin = Some(cancel_tx);
         self.emit(Event::Playback(LocalPlayback::Authorizing));
-        if let Err(error) = open::that_detached(&flow.url) {
-            log::warn!("unable to open a browser: {error}");
-        }
+        // Keep the opener off the Tokio worker and reap its launcher child;
+        // this matters on Linux, where detached `xdg-open` can become a
+        // zombie when nobody waits for it.
+        let browser_url = flow.url.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = crate::opener::open(&browser_url) {
+                log::warn!("unable to open a browser: {error}");
+            }
+        });
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
@@ -1416,22 +1431,16 @@ impl Worker {
         });
     }
 
-    fn check_for_updates(&self) {
+    fn check_for_updates(&self, manual: bool) {
         let http = self.http.clone();
         let events = self.events.clone();
         let waker = self.waker.clone();
         tokio::spawn(async move {
-            match crate::updates::newer_release(&http).await {
-                Ok(Some(release)) => {
-                    let _ = events.send(Event::UpdateAvailable {
-                        version: release.version,
-                        url: release.url,
-                    });
-                    waker.wake();
-                }
-                Ok(None) => log::debug!("this is the newest release"),
-                Err(error) => log::debug!("could not check for a newer release: {error:#}"),
-            }
+            let result = crate::updates::newer_release(&http)
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let _ = events.send(Event::UpdateChecked { manual, result });
+            waker.wake();
         });
     }
 
@@ -1697,6 +1706,14 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
     }
 }
 
+/// recommendations are an optional Home shelf: current Development Mode apps
+/// may return 403 or 404 because Spotify no longer exposes that endpoint to
+/// them. Keep that platform limitation from turning the whole shelf into an
+/// error while preserving other API failures for diagnostics.
+fn recommendations_unavailable(error: &ApiError) -> bool {
+    matches!(error.status(), Some(403 | 404 | 410))
+}
+
 fn observe_playlists(api: &ApiGateway, response: &ApiResponse) {
     match response {
         ApiResponse::Discover {
@@ -1795,10 +1812,19 @@ async fn handle(api: &ApiGateway, request: ApiRequest) -> (ApiResponse, Option<A
             seed_tracks,
             seed_artists,
             generation,
-        } => ApiResponse::Recommendations {
-            generation,
-            result: routed!(recommendations(&seed_tracks, &seed_artists, 20)),
-        },
+        } => {
+            let result = routed!(recommendations(&seed_tracks, &seed_artists, 20)).or_else(|error| {
+                if recommendations_unavailable(&error) {
+                    log::info!(
+                        "Spotify recommendations are unavailable; hiding the Home shelf: {error}"
+                    );
+                    Ok(Vec::new())
+                } else {
+                    Err(error)
+                }
+            });
+            ApiResponse::Recommendations { generation, result }
+        }
         ApiRequest::Discover { term, generation } => {
             let result = routed!(search(&term, &["playlist"]))
                 .map(|results| results.playlists.map(|page| page.items).unwrap_or_default());
@@ -2349,6 +2375,24 @@ mod tests {
             capabilities: vec![crate::plugins::PluginManifest::provider_capability(kind)],
             domains: Vec::new(),
             sha256: String::new(),
+        }
+    }
+
+    #[test]
+    fn missing_recommendations_endpoint_hides_only_that_optional_shelf() {
+        for status in [403, 404, 410] {
+            let error = ApiError::Status {
+                status,
+                message: "not available".into(),
+            };
+            assert!(recommendations_unavailable(&error));
+        }
+        for status in [400, 429, 500] {
+            let error = ApiError::Status {
+                status,
+                message: "request failed".into(),
+            };
+            assert!(!recommendations_unavailable(&error));
         }
     }
 

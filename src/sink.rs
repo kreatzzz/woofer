@@ -10,8 +10,8 @@
 //! and tells the interface why, so the app stays up as a Connect remote and
 //! plays as soon as an output exists.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,6 +21,8 @@ use librespot_playback::convert::Converter;
 use librespot_playback::decoder::AudioPacket;
 use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
+
+use crate::resample::Resampler;
 
 /// The backend name Settings uses for this sink.
 pub const NAME: &str = "rodio";
@@ -40,6 +42,31 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often playback looks at which output the system calls its default.
 const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Default Windows device buffer length in milliseconds. A larger shared-mode
+/// buffer gives a busy machine room to keep the music stream fed.
+pub const DEFAULT_BUFFER_MS: u32 = 100;
+
+/// Safe bounds for the configurable Windows output buffer.
+pub const BUFFER_MS_RANGE: std::ops::RangeInclusive<u32> = 20..=500;
+
+/// Converts a duration setting to a device buffer size. When a driver reports
+/// a supported range, stay inside it because CoreAudio rejects out-of-range
+/// fixed buffers rather than adjusting them for us.
+fn engine_buffer(
+    sample_rate: u32,
+    buffer_ms: u32,
+    supported: cpal::SupportedBufferSize,
+) -> cpal::BufferSize {
+    let buffer_ms = buffer_ms.clamp(*BUFFER_MS_RANGE.start(), *BUFFER_MS_RANGE.end());
+    let frames = (u64::from(sample_rate) * u64::from(buffer_ms) / 1_000).max(1) as u32;
+    match supported {
+        cpal::SupportedBufferSize::Range { min, max } if min <= max && max > 0 => {
+            cpal::BufferSize::Fixed(frames.clamp(min.max(1), max))
+        }
+        _ => cpal::BufferSize::Fixed(frames),
+    }
+}
+
 pub struct RodioSink {
     /// The output device name from Settings; `None` means the default.
     device: Option<String>,
@@ -49,7 +76,10 @@ pub struct RodioSink {
     /// at once instead of after the queue drains.
     volume: Box<dyn VolumeGetter + Send>,
     applied_volume: f32,
-    default_checked_at: Option<Instant>,
+    /// Keeps asking which output the system calls its default.
+    watch: Option<DefaultWatch>,
+    /// How much sound to ask the device to hold, in milliseconds.
+    buffer_ms: u32,
 }
 
 struct Output {
@@ -59,6 +89,10 @@ struct Output {
     device_name: Option<String>,
     /// Set from the audio thread when the stream dies (device unplugged).
     failed: Arc<AtomicBool>,
+    /// The stream's actual rate, and a stateful converter when it differs
+    /// from Spotify's 44.1 kHz source.
+    sample_rate: u32,
+    resampler: Option<Resampler>,
 }
 
 impl Output {
@@ -72,6 +106,7 @@ impl RodioSink {
         device: Option<String>,
         on_error: ErrorHook,
         volume: Box<dyn VolumeGetter + Send>,
+        buffer_ms: u32,
     ) -> Self {
         Self {
             device,
@@ -79,7 +114,8 @@ impl RodioSink {
             on_error,
             volume,
             applied_volume: -1.0,
-            default_checked_at: None,
+            watch: None,
+            buffer_ms,
         }
     }
 
@@ -87,9 +123,10 @@ impl RodioSink {
     /// listener has not picked a device: headphones plugged in, a Bluetooth
     /// speaker connected, another device chosen in the sound settings. The
     /// stream was opened on one device and would keep playing through it
-    /// otherwise. Asking is cheap on Windows and macOS. On Linux PipeWire
-    /// and PulseAudio move the stream themselves, and ALSA's answer never
-    /// changes, so nothing is asked there.
+    /// otherwise. Windows and macOS are asked; on Linux PipeWire and
+    /// PulseAudio move the stream themselves, and ALSA's answer never
+    /// changes, so nothing is asked there. The asking runs on its own thread
+    /// because device enumeration can block the decoder.
     fn follow_default(&mut self, at_once: bool) {
         if cfg!(target_os = "linux") || self.device.is_some() {
             return;
@@ -97,17 +134,8 @@ impl RodioSink {
         let Some(output) = &self.output else {
             return;
         };
-        if !at_once
-            && self
-                .default_checked_at
-                .is_some_and(|at| at.elapsed() < DEFAULT_CHECK_INTERVAL)
-        {
-            return;
-        }
-        self.default_checked_at = Some(Instant::now());
-        let current = cpal::default_host()
-            .default_output_device()
-            .and_then(|device| device.name().ok());
+        let watch = self.watch.get_or_insert_with(DefaultWatch::start);
+        let current = if at_once { watch.ask() } else { watch.name() };
         if current.is_some() && current != output.device_name {
             log::info!(
                 "the default audio output is now {}; moving playback to it",
@@ -136,7 +164,7 @@ impl RodioSink {
         if self.output.is_some() {
             return Ok(());
         }
-        match open_output(self.device.as_deref()) {
+        match open_output(self.device.as_deref(), self.buffer_ms) {
             Ok(output) => {
                 self.output = Some(output);
                 self.applied_volume = -1.0;
@@ -154,6 +182,7 @@ impl RodioSink {
 
 impl Sink for RodioSink {
     fn start(&mut self) -> SinkResult<()> {
+        take_precedence();
         self.follow_default(true);
         self.ensure_open()?;
         self.apply_volume();
@@ -183,14 +212,18 @@ impl Sink for RodioSink {
         self.follow_default(false);
         self.ensure_open()?;
         self.apply_volume();
-        let Some(output) = &self.output else {
+        let Some(output) = &mut self.output else {
             return Err(SinkError::NotConnected(
                 "the audio output is not open".into(),
             ));
         };
+        let samples = match &mut output.resampler {
+            Some(resampler) => resampler.process(&samples),
+            None => samples,
+        };
         output.sink.append(rodio::buffer::SamplesBuffer::new(
             NUM_CHANNELS as rodio::ChannelCount,
-            SAMPLE_RATE as rodio::SampleRate,
+            output.sample_rate as rodio::SampleRate,
             samples,
         ));
         // Let rodio drain a little; without this the whole track would be
@@ -207,6 +240,110 @@ impl Sink for RodioSink {
     }
 }
 
+/// Opens the stream at Spotify's stereo 44.1 kHz when possible, otherwise at
+/// the device's own rate. The converter in `Output` handles the latter case.
+/// On Windows the configured buffer is requested; other platforms keep the
+/// driver's native callback period, which is safer for CoreAudio, ALSA,
+/// PulseAudio, and PipeWire.
+fn open_stream(
+    device: &cpal::Device,
+    on_error: impl FnMut(cpal::StreamError) + Send + Clone + 'static,
+    buffer_ms: u32,
+) -> Result<rodio::OutputStream, rodio::StreamError> {
+    let supported = device
+        .default_output_config()
+        .map(|config| *config.buffer_size())
+        .unwrap_or(cpal::SupportedBufferSize::Unknown);
+    let builder = |sample_rate: u32, fixed_buffer: bool| -> Result<_, rodio::StreamError> {
+        let builder = rodio::OutputStreamBuilder::from_device(device.clone())?
+            .with_channels(NUM_CHANNELS as rodio::ChannelCount)
+            .with_sample_rate(sample_rate as rodio::SampleRate)
+            .with_error_callback(on_error.clone());
+        Ok(if fixed_buffer {
+            builder.with_buffer_size(engine_buffer(sample_rate, buffer_ms, supported))
+        } else {
+            builder
+        })
+    };
+    let fixed_buffer = cfg!(windows);
+    if let Ok(stream) = builder(SAMPLE_RATE, fixed_buffer)?.open_stream() {
+        return Ok(stream);
+    }
+    if let Ok(config) = device.default_output_config()
+        && let Ok(stream) = builder(config.sample_rate().0, fixed_buffer)?.open_stream()
+    {
+        return Ok(stream);
+    }
+    // If a driver rejects both explicit configurations, let rodio choose its
+    // own supported stream rather than making playback unavailable.
+    builder(SAMPLE_RATE, false)?.open_stream_or_fallback()
+}
+
+/// Keeps the decoder ahead of ordinary application work on Windows. The
+/// audio callback has its own real-time scheduling; this only protects the
+/// producer that keeps the bounded output queue fed.
+#[cfg(windows)]
+fn take_precedence() {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+    };
+    // SAFETY: the current thread's pseudo-handle needs no closing, and the
+    // call only changes its scheduling priority.
+    unsafe {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    }
+}
+
+#[cfg(not(windows))]
+fn take_precedence() {}
+
+/// Last default-output name, polled away from the decoder because device
+/// enumeration can block on Windows driver stacks.
+struct DefaultWatch(Arc<Mutex<Option<String>>>);
+
+impl DefaultWatch {
+    fn start() -> Self {
+        let shared = Arc::new(Mutex::new(None));
+        let weak = Arc::downgrade(&shared);
+        let watching = thread::Builder::new()
+            .name("audio-default-watch".into())
+            .spawn(move || {
+                while let Some(shared) = weak.upgrade() {
+                    let name = default_output_name();
+                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = name;
+                    drop(shared);
+                    thread::sleep(DEFAULT_CHECK_INTERVAL);
+                }
+            });
+        if let Err(error) = watching {
+            log::warn!("cannot watch the default audio output: {error}");
+        }
+        Self(shared)
+    }
+
+    /// The answer from the last background poll.
+    fn name(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Ask synchronously when playback starts, before the first samples go
+    /// out, while subsequent polls stay off the decoder thread.
+    fn ask(&self) -> Option<String> {
+        let name = default_output_name();
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = name.clone();
+        name
+    }
+}
+
+fn default_output_name() -> Option<String> {
+    cpal::default_host()
+        .default_output_device()
+        .and_then(|device| device.name().ok())
+}
+
 #[derive(Debug, thiserror::Error)]
 enum OpenError {
     #[error("No audio output device was found. Connect or enable one, then press play again.")]
@@ -217,7 +354,7 @@ enum OpenError {
     Stream(#[from] rodio::StreamError),
 }
 
-fn open_output(preferred: Option<&str>) -> Result<Output, OpenError> {
+fn open_output(preferred: Option<&str>, buffer_ms: u32) -> Result<Output, OpenError> {
     let host = cpal::default_host();
     let device = match preferred.map(str::trim).filter(|name| !name.is_empty()) {
         Some(name) => {
@@ -242,23 +379,27 @@ fn open_output(preferred: Option<&str>) -> Result<Output, OpenError> {
 
     let failed = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&failed);
-    // Spotify's native stereo 44.1 kHz first, so nothing is resampled; rodio
-    // falls back to whatever the device does support.
-    let mut stream = rodio::OutputStreamBuilder::from_device(device)?
-        .with_channels(NUM_CHANNELS as rodio::ChannelCount)
-        .with_sample_rate(SAMPLE_RATE as rodio::SampleRate)
-        .with_error_callback(move |error: cpal::StreamError| {
-            log::error!("audio stream error: {error}");
-            flag.store(true, Ordering::Relaxed);
-        })
-        .open_stream_or_fallback()?;
+    let on_error = move |error: cpal::StreamError| {
+        log::error!("audio stream error: {error}");
+        flag.store(true, Ordering::Relaxed);
+    };
+    let mut stream = open_stream(&device, on_error, buffer_ms)?;
     stream.log_on_drop(false);
+    let sample_rate = stream.config().sample_rate();
+    let resampler = Resampler::new(SAMPLE_RATE, sample_rate, NUM_CHANNELS as usize);
+    if resampler.is_some() {
+        log::info!(
+            "the output runs at {sample_rate} Hz; the music is converted from {SAMPLE_RATE} Hz"
+        );
+    }
     let sink = rodio::Sink::connect_new(stream.mixer());
     Ok(Output {
         sink,
         _stream: stream,
         device_name,
         failed,
+        sample_rate,
+        resampler,
     })
 }
 
@@ -266,6 +407,60 @@ fn open_output(preferred: Option<&str>) -> Result<Output, OpenError> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn buffer_duration_scales_with_sample_rate() {
+        let unknown = cpal::SupportedBufferSize::Unknown;
+        assert_eq!(
+            engine_buffer(44_100, 100, unknown),
+            cpal::BufferSize::Fixed(4_410)
+        );
+        assert_eq!(
+            engine_buffer(48_000, 100, unknown),
+            cpal::BufferSize::Fixed(4_800)
+        );
+        assert_eq!(
+            engine_buffer(44_100, 20, unknown),
+            cpal::BufferSize::Fixed(882)
+        );
+    }
+
+    #[test]
+    fn buffer_duration_stays_inside_driver_range() {
+        let range = cpal::SupportedBufferSize::Range {
+            min: 64,
+            max: 2_048,
+        };
+        assert_eq!(
+            engine_buffer(44_100, 100, range),
+            cpal::BufferSize::Fixed(2_048)
+        );
+        assert_eq!(
+            engine_buffer(44_100, 20, range),
+            cpal::BufferSize::Fixed(882)
+        );
+        let tiny = cpal::SupportedBufferSize::Range {
+            min: 4_096,
+            max: 8_192,
+        };
+        assert_eq!(
+            engine_buffer(44_100, 20, tiny),
+            cpal::BufferSize::Fixed(4_096)
+        );
+    }
+
+    #[test]
+    fn invalid_buffer_settings_are_clamped() {
+        let unknown = cpal::SupportedBufferSize::Unknown;
+        assert_eq!(
+            engine_buffer(44_100, 0, unknown),
+            engine_buffer(44_100, *BUFFER_MS_RANGE.start(), unknown)
+        );
+        assert_eq!(
+            engine_buffer(44_100, 100_000, unknown),
+            engine_buffer(44_100, *BUFFER_MS_RANGE.end(), unknown)
+        );
+    }
 
     /// A machine without audio (CI, a PC with nothing plugged in) must get
     /// an error and a message for the interface, never a panic. A machine
@@ -278,6 +473,7 @@ mod tests {
             Some("no such device".into()),
             Arc::new(move |message| *store.lock().unwrap() = Some(message)),
             Box::new(librespot_playback::mixer::NoOpVolume),
+            DEFAULT_BUFFER_MS,
         );
         match sink.start() {
             Ok(()) => assert!(reported.lock().unwrap().is_none()),
