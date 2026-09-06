@@ -5,14 +5,14 @@ description: Get Woofer for macOS, Windows, or Linux, with install instructions 
 
 # Download Woofer
 
-Woofer **v0.4.0 is tagged and its release workflow has been verified**. There
-is no public binary release yet while publication and package-manager channels
-are prepared. This page will add direct, checksum-verified downloads when the
-release assets are public.
+Woofer **v0.4.0 is published** with checksum-verified builds for Linux, macOS,
+and Windows. Download the platform build from the
+[GitHub release](https://github.com/kreatzzz/woofer/releases/tag/v0.4.0), or
+install the macOS build through Homebrew:
 
-For now, the reliable way to try Woofer is to build it from source. The
-application itself is ready for Linux, macOS, and Windows; the release status
-is the part that is still in motion.
+```sh
+brew install --cask kreatzzz/tap/woofer
+```
 
 ## Build from source
 
@@ -39,25 +39,24 @@ sudo apt install libasound2-dev libpulse-dev libxkbcommon-dev libwayland-dev lib
 The repository's [Nix development shell](https://nixos.org) provides the
 same libraries and the pinned toolchain.
 
-## What the release will include
+## What the release includes
 
-When the v0.4.0 release is published, its GitHub release will carry:
+The v0.4.0 GitHub release carries:
 
 - a universal macOS DMG for Apple Silicon and Intel;
 - Windows installers and portable archives for x86_64 and ARM64;
 - Linux archives for x86_64 and ARM64;
 - `checksums.txt` with a SHA-256 entry for every file.
 
-Watch the [Woofer releases](https://github.com/kreatzzz/woofer/releases) page
-for the first published build. The [release plan](/dev/release-plan) records
-the package-manager order and the unsigned macOS first-open note.
+Use the accompanying `checksums.txt` to verify a manual download. The
+[release plan](/dev/release-plan) records the package-manager rollout and the
+unsigned macOS first-open note.
 
 ## Platform notes
 
 ### macOS
 
-The first public DMG may be unsigned while Apple credentials are being
-configured. An unsigned build asks you to approve Woofer once in **System
+The v0.4.0 DMG is unsigned. It asks you to approve Woofer once in **System
 Settings → Privacy & Security**; later launches work normally. A signed and
 notarized DMG skips that first-open warning when the release workflow's full
 Apple contract is configured.
@@ -72,10 +71,10 @@ checking the checksum from the release.
 
 The archive includes the binary and desktop integration files. Runtime needs
 are the ordinary desktop libraries: ALSA, PulseAudio or PipeWire, and Wayland
-or X11. Arch users can use the AUR once the first package is published.
+or X11. The AUR package is not live yet.
 
 ## Package managers
 
-Homebrew, AUR, and winget packages are planned in that order. They are not
-published yet, so commands such as `brew install` and `yay -S` are intentionally
-not presented as working instructions.
+The Homebrew cask is live. The initial winget submission is under review, and
+the AUR package is waiting for maintainer authentication. Until those two are
+published, use the GitHub release builds on Windows and Linux.

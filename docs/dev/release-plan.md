@@ -5,25 +5,23 @@ description: The reproducible runbook for publishing Woofer builds and package-m
 
 # Release and packaging runbook
 
-State: **v0.4.0 is tagged and verified, but unpublished** (Sep 4, 2026).
-An earlier `v0.3.0` tag attempt triggered nothing (fork Actions quirk) and
-was deleted; no public GitHub releases exist. The repository version is
-`0.4.0` in `Cargo.toml`, and the release build/verification run is green.
-The runbook below starts with the explicit publish pass; do not create a
-second `v0.4.0` tag.
+State: **v0.4.0 was published with verified assets on Sep 5, 2026**.
+The Homebrew cask is live, the winget submission is open as
+`microsoft/winget-pkgs#429939`, and AUR is waiting for an authenticated
+maintainer SSH key. The repository version remains `0.4.0` in `Cargo.toml`.
 
-## 0. Cut, verify, and publish the release
+## 0. Cut, verify, and publish a release
 
-The successful verification run built and checked the complete release matrix
-but did not publish a GitHub release. The workflow also accepts a manual
-dispatch: a branch run is an isolated smoke build named
-`0.4.0-dev.<run-number>`, while a dispatch from the release tag can publish
-only when the `publish` input is explicitly set to `true`.
+The release workflow builds and checks the complete matrix before publishing.
+It also accepts a manual dispatch: a branch run is an isolated smoke build
+named `<version>-dev.<run-number>`, while a dispatch from a release tag can
+publish only when the `publish` input is explicitly set to `true`.
 
-Start the publish pass from the already verified tag:
+For a verified tag that has not yet been published, start the publish pass
+from that tag:
 
 ```bash
-gh workflow run Release --repo kreatzzz/woofer --ref v0.4.0 -f publish=true
+gh workflow run Release --repo kreatzzz/woofer --ref vX.Y.Z -f publish=true
 ```
 
 The assemble job validates every name, archive path, and checksum before the
@@ -42,7 +40,11 @@ but require the complete six-secret Apple contract; otherwise the DMG is
 ad-hoc/unsigned and needs the usual first-open approval. Tag-push smoke runs
 never receive signing secrets.
 
-## 1. Homebrew tap (~10 min, fully scriptable)
+## 1. Homebrew tap (live for v0.4.0)
+
+The cask lives at `kreatzzz/homebrew-tap/Casks/woofer.rb`; users install it
+with `brew install --cask kreatzzz/tap/woofer`. The setup steps below are kept
+as the template for another tap or maintainer.
 
 ```bash
 gh repo create kreatzzz/homebrew-tap --public --clone=false
@@ -91,7 +93,7 @@ unsigned, put the first-open note in the README: right-click → Open, or
 `xattr -cr /Applications/Woofer.app`. Add the direct release URL only after
 the explicit publish pass has created a public asset.
 
-## 2. AUR (~20 min, needs the user's aur.archlinux.org account + SSH key)
+## 2. AUR (waiting for the maintainer's aur.archlinux.org SSH key)
 
 Two packages, each pushed to `aur@aur.archlinux.org:<pkg>.git`:
 
@@ -134,7 +136,11 @@ the verified x86_64 archive hash; the `-git` package deliberately uses
 `source=("$pkgname::git+$url.git")`, `pkgver()` from `git describe`,
 build with `cargo build --release --locked`, same `package()` installs.
 
-## 3. winget (Windows; the bureaucratic one)
+## 3. winget (v0.4.0 submission open)
+
+The initial submission is
+[`microsoft/winget-pkgs#429939`](https://github.com/microsoft/winget-pkgs/pull/429939).
+For future releases:
 
 1. Fork `microsoft/winget-pkgs` under `kreatzzz`, shallow-clone it.
 2. Add `manifests/k/kreatzzz/Woofer/0.4.0/` with three YAML files:
@@ -159,12 +165,10 @@ build with `cargo build --release --locked`, same `package()` installs.
 
 Future versions: a new version folder per release.
 
-## After the first release
+## After each release
 
 - Bump the tap (version + sha256) — one commit.
-- `docs/_guide/download.md` records the paused release state and the source
-  install path; add direct package links there when Homebrew/AUR/winget are
-  live.
+- Keep `docs/_guide/download.md` aligned with the package managers that are
+  actually live.
 - The update checker (`src/updates.rs`) watches
-  `kreatzzz/woofer/releases/latest` — it starts working from the first
-  real release.
+  `kreatzzz/woofer/releases/latest`.

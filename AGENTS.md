@@ -40,10 +40,10 @@ marketplace, and a UI direction the upstream maintainer does not want. Read
 | `src/single_instance.rs` | The control socket: `woofer next`, `woofer nowplaying`, … |
 | `src/demo.rs` | Sample data, `--demo-page/--demo-show/--demo-shot`, and the headless render test |
 | `plugins/sdk` | `woofer-plugin-sdk`: `register_plugin!` macro + offline wasmi test harness |
-| `plugins/translate`, `plugins/romanize` | The two official plugins, built to `assets/plugins/*.wasm` |
+| `plugins/translate`, `plugins/romanize` | The two official provider crates; their reviewed Wasm is published separately in the catalog |
 | `docs/plugins.md` | The whole plugin design (ABI, arities, sandbox limits, marketplace) |
 | `docs/dev/decisions.md` | Every decision, dated |
-| `docs/dev/release-plan.md` | How publishing works (Homebrew / AUR / winget) — currently halted |
+| `docs/dev/release-plan.md` | How the verified v0.4.0 assets become a public release, then Homebrew / AUR / winget entries |
 
 ## Commands
 
@@ -54,8 +54,8 @@ cargo test --features demo # adds the headless render of every page
 cargo test --lib plugins -- --ignored --nocapture   # LIVE Google round-trip through both plugins
 ```
 
-Rebuilding the published plugins (only after editing `plugins/*`), then
-syncing the catalog repo's `plugins/<id>/plugin.wasm` and its
+Rebuilding a plugin (only after editing `plugins/*`), then submitting the
+resulting module to the catalog repo's `plugins/<id>/plugin.wasm` with its
 `registry.json` digest:
 
 ```bash
@@ -63,9 +63,10 @@ rustup target add wasm32-unknown-unknown
 cd plugins/translate && cargo build --release --target wasm32-unknown-unknown
 # the artifact is target/wasm32-unknown-unknown/release/woofer_plugin_translate.wasm
 # same for romanize; both plugins' harness tests run with plain `cargo test` in their crate
+# do not copy these artifacts into assets/; the app ships no plugin modules
 ```
 
-## The current state (2026-08-30)
+## The current state (2026-09-04)
 
 - `main` carries everything, now including the **un-bundling** (the app
   ships no plugins; Translate/Romanize are catalog installs) and the
@@ -77,8 +78,11 @@ cd plugins/translate && cargo build --release --target wasm32-unknown-unknown
   no lyrics plugin ships yet) and **`woofer://install` deep links**
   (registered by all three packages, resolved against
   usewoofer.com/registry.json, sha256-verified, confirm dialog before
-  anything installs). Version is `0.4.0` in Cargo.toml but **nothing is
-  released** — publishing is deliberately paused at the user's request.
+  anything installs). Version `0.4.0` was published on 2026-09-05 with
+  verified assets. The Homebrew cask is live and the winget submission is
+  open; AUR still needs an authenticated maintainer SSH key.
+  `packaging/release/prepare-packages.sh` renders the package handoff files
+  from the public assets and their verified `checksums.txt`.
 - The marketplace site (`kreatzzz/woofer-plugins`, static) is pushed and
   ready; the user owns `usewoofer.com` and still needs to deploy on Vercel
   and point DNS (A `76.76.21.21`, `www` CNAME `cname.vercel-dns.com`).
@@ -108,19 +112,21 @@ cd plugins/translate && cargo build --release --target wasm32-unknown-unknown
   canned JSON).
 - `zh-CN` and `zh-TW` count as the same language in the source==target
   skip — a known limitation, flagged in tests.
-- The release workflow has **no `workflow_dispatch`** — only a `v*` tag
-  push triggers it, and on this fork the tag push once failed to trigger
-  anything; check the Actions tab after tagging.
-- The docs folder is the upstream Jekyll site (its `CNAME` still says
-  `fastpotify.rocks`); it is not deployed for the fork.
+- The release workflow has a manual `workflow_dispatch`: a `v*` tag push
+  builds and verifies assets, while a second dispatch from that tag with
+  `publish=true` is the only path that creates the public GitHub release.
+  Check the Actions tab after either run.
+- The docs folder is now a VitePress site published at the repository Pages
+  path; the legacy Jekyll files remain only as source material while the
+  catalog website is maintained separately.
 - In zsh, `$VAR` does not word-split, and `sed` via `xargs` hangs on empty
   input (reads stdin) — pipe through `grep … | xargs …` carefully.
 
 ## What is next (agreed order)
 
-1. Publishing when the user says go: tag `v0.3.0` → verify the run →
-   Homebrew tap with real hashes → AUR PKGBUILDs → winget manifests.
-   Details in `docs/dev/release-plan.md`.
+1. Finish the package-manager rollout: merge the open winget submission and
+   publish the generated AUR package once an authenticated maintainer SSH key
+   is available. Details are in `docs/dev/release-plan.md`.
 2. Vercel deploy + DNS for usewoofer.com (user side, ~5 min).
 3. Upstream: follow up on PRs #60/#61.
 4. Plugin v1.5: the `panel` capability (widget vocabulary is drafted in
