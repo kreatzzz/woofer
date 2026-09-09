@@ -10,12 +10,33 @@ use crate::theme::{self, Icon, Palette};
 
 const URL_DRAFT_ID: &str = "plugin-url-draft";
 
-/// The provider kinds, in the order the page shows them: lyrics, then the
-/// two per-line aids.
-const KINDS: &[(&str, &str)] = &[
-    ("lyrics", "Lyrics providers"),
-    ("translate", "Translation providers"),
-    ("romanize", "Romanization providers"),
+struct ProviderKind {
+    id: &'static str,
+    title: &'static str,
+    description: &'static str,
+    icon: Icon,
+}
+
+/// the provider kinds, in the order the page shows them.
+const KINDS: &[ProviderKind] = &[
+    ProviderKind {
+        id: "lyrics",
+        title: "Lyrics",
+        description: "Extra sources run only when Spotify and LRCLIB have no match.",
+        icon: Icon::Mic,
+    },
+    ProviderKind {
+        id: "translate",
+        title: "Translation",
+        description: "Providers add a translated line beneath the original.",
+        icon: Icon::Globe,
+    },
+    ProviderKind {
+        id: "romanize",
+        title: "Romanization",
+        description: "Providers rewrite non-Latin scripts so they are easier to sing.",
+        icon: Icon::Sparkles,
+    },
 ];
 
 fn section(
@@ -37,7 +58,7 @@ fn section(
         .corner_radius(CornerRadius::same(theme::RADIUS + 2))
         .inner_margin(Margin::symmetric(20, 16))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width().min(760.0));
+            ui.set_width(ui.available_width().min(820.0));
             add_contents(ui);
         });
     ui.add_space(12.0);
@@ -51,20 +72,22 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     theme::subtle(
         ui,
         &palette,
-        "Plugins run in a sandbox and can only ask Woofer to fetch what they declare. Each kind asks its providers in order, and the first with an answer wins.",
+        "Add only what you need. Nothing installs automatically, and every provider runs inside Woofer's sandbox.",
     );
 
     install_controls(app, ui, &palette);
 
-    // Cloned so the rows can act on the app while reading it.
+    // cloned so the rows can act on the app while reading it.
     let plugins = app.plugins.clone();
-    for (kind, title) in KINDS {
-        section(ui, &palette, title, |ui| {
+    section(ui, &palette, "Provider order", |ui| {
+        for (index, kind) in KINDS.iter().enumerate() {
             provider_section(app, ui, &palette, &plugins, kind);
-        });
-    }
-    section(ui, &palette, "Other surfaces", |ui| {
-        theme::subtle(ui, &palette, "Sidebar panels — coming soon.");
+            if index + 1 < KINDS.len() {
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(12.0);
+            }
+        }
     });
 }
 
@@ -76,35 +99,43 @@ fn provider_section(
     ui: &mut egui::Ui,
     palette: &Palette,
     plugins: &[Plugin],
-    kind: &str,
+    kind: &ProviderKind,
 ) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(theme::RADIUS),
+            palette.surface_hover,
+        );
+        theme::paint_icon(ui, kind.icon, rect, 18.0, palette.secondary);
+        ui.vertical(|ui| {
+            theme::text(ui, kind.title, theme::semibold(14.0), palette.text);
+            theme::text(
+                ui,
+                kind.description,
+                theme::regular(12.5),
+                palette.secondary,
+            );
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            chip(ui, palette, "built-in fallback");
+        });
+    });
+    ui.add_space(12.0);
     let resolved = crate::plugins::manager::chain_plugins(
         plugins,
-        app.settings.provider_chains.for_kind(kind),
-        kind,
+        app.settings.provider_chains.for_kind(kind.id),
+        kind.id,
     );
     if resolved.is_empty() {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            theme::subtle(
-                ui,
-                palette,
-                "No plugins — the built-in source answers. Find one at",
-            );
-            if theme::text(
-                ui,
-                "usewoofer.com/plugins",
-                theme::medium(13.0),
-                palette.accent,
-            )
-            .interact(egui::Sense::click())
-            .clicked()
-            {
-                app.actions
-                    .push(Action::OpenUrl("https://usewoofer.com/plugins".into()));
-            }
-            theme::subtle(ui, palette, ".");
-        });
+        theme::text(
+            ui,
+            "No plugin installed. Woofer will use its built-in source.",
+            theme::regular(12.5),
+            palette.dim,
+        );
     }
     let last = resolved.len().saturating_sub(1);
     for (index, plugin) in resolved.iter().enumerate() {
@@ -113,7 +144,7 @@ fn provider_section(
             ui,
             palette,
             plugin,
-            kind,
+            kind.id,
             RowControls {
                 can_move_up: index > 0,
                 can_move_down: index < last,
@@ -121,7 +152,7 @@ fn provider_section(
             },
         );
     }
-    let wanted = crate::plugins::PluginManifest::provider_capability(kind);
+    let wanted = crate::plugins::PluginManifest::provider_capability(kind.id);
     for plugin in plugins {
         if !resolved.iter().any(|held| held.id == plugin.id)
             && plugin.capabilities.contains(&wanted)
@@ -131,7 +162,7 @@ fn provider_section(
                 ui,
                 palette,
                 plugin,
-                kind,
+                kind.id,
                 RowControls {
                     can_move_up: false,
                     can_move_down: false,
@@ -146,7 +177,46 @@ fn provider_section(
 /// The URL field and its pill. The draft lives in egui's memory, so the
 /// page holds no state of its own; Enter installs just like the pill.
 fn install_controls(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
-    section(ui, palette, "Install", |ui| {
+    section(ui, palette, "Add a plugin", |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(38.0), Sense::hover());
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(theme::RADIUS),
+                palette
+                    .accent
+                    .gamma_multiply(if palette.dark { 0.16 } else { 0.10 }),
+            );
+            theme::paint_icon(ui, Icon::BadgeCheck, rect, 18.0, palette.accent);
+            ui.vertical(|ui| {
+                theme::text(ui, "Reviewed catalog", theme::semibold(14.0), palette.text);
+                theme::text(
+                    ui,
+                    "See each plugin's publisher, permissions, and source before installing.",
+                    theme::regular(12.5),
+                    palette.secondary,
+                );
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::pill_button(ui, palette, "Open catalog", true).clicked() {
+                    app.actions
+                        .push(Action::OpenUrl("https://usewoofer.com/plugins".into()));
+                }
+            });
+        });
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(12.0);
+        theme::text(ui, "Manual install", theme::semibold(13.0), palette.text);
+        ui.add_space(4.0);
+        theme::text(
+            ui,
+            "For development or a module you have reviewed yourself.",
+            theme::regular(12.5),
+            palette.secondary,
+        );
+        ui.add_space(10.0);
         let draft_id = egui::Id::new(URL_DRAFT_ID);
         let mut url = ui
             .data(|data| data.get_temp::<String>(draft_id))
@@ -172,7 +242,7 @@ fn install_controls(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
                 .inner;
             let pressed_enter =
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if pressed_enter || theme::pill_button(ui, palette, "Install from URL", true).clicked()
+            if pressed_enter || theme::pill_button(ui, palette, "Install from URL", false).clicked()
             {
                 let url = url.trim().to_string();
                 if !url.is_empty() {
@@ -186,20 +256,12 @@ fn install_controls(app: &mut App, ui: &mut egui::Ui, palette: &Palette) {
         } else {
             ui.data_mut(|data| data.insert_temp(draft_id, url));
         }
-        ui.add_space(2.0);
-        theme::subtle(ui, palette, "…or drag a .wasm file onto the window.");
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            theme::subtle(ui, palette, "The catalog lives at");
-            if theme::text(ui, "usewoofer.com", theme::medium(13.0), palette.accent)
-                .interact(egui::Sense::click())
-                .clicked()
-            {
-                app.actions
-                    .push(Action::OpenUrl("https://usewoofer.com".into()));
-            }
-            theme::subtle(ui, palette, "— every listing is reviewed by hand.");
-        });
+        ui.add_space(4.0);
+        theme::subtle(
+            ui,
+            palette,
+            "You can also drag a .wasm file onto the window.",
+        );
     });
 }
 

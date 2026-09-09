@@ -40,7 +40,7 @@ marketplace, and a UI direction the upstream maintainer does not want. Read
 | `src/single_instance.rs` | The control socket: `woofer next`, `woofer nowplaying`, … |
 | `src/demo.rs` | Sample data, `--demo-page/--demo-show/--demo-shot`, and the headless render test |
 | `plugins/sdk` | `woofer-plugin-sdk`: `register_plugin!` macro + offline wasmi test harness |
-| `plugins/translate`, `plugins/romanize` | The two official provider crates; their reviewed Wasm is published separately in the catalog |
+| `plugins/*` | The SDK and official provider crates; reviewed Wasm is published separately in the catalog |
 | `docs/plugins.md` | The whole plugin design (ABI, arities, sandbox limits, marketplace) |
 | `docs/dev/decisions.md` | Every decision, dated |
 | `docs/dev/release-plan.md` | How the verified v0.4.0 assets become a public release, then Homebrew / AUR / winget entries |
@@ -54,7 +54,7 @@ cargo test --features demo # adds the headless render of every page
 cargo test --lib plugins -- --ignored --nocapture   # LIVE Google round-trip through both plugins
 ```
 
-Rebuilding a plugin (only after editing `plugins/*`), then submitting the
+Rebuilding a plugin (only after editing its crate), then submitting the
 resulting module to the catalog repo's `plugins/<id>/plugin.wasm` with its
 `registry.json` digest:
 
@@ -62,7 +62,7 @@ resulting module to the catalog repo's `plugins/<id>/plugin.wasm` with its
 rustup target add wasm32-unknown-unknown
 cd plugins/translate && cargo build --release --target wasm32-unknown-unknown
 # the artifact is target/wasm32-unknown-unknown/release/woofer_plugin_translate.wasm
-# same for romanize; both plugins' harness tests run with plain `cargo test` in their crate
+# use the same command in any provider crate; its harness runs with plain `cargo test`
 # do not copy these artifacts into assets/; the app ships no plugin modules
 ```
 
@@ -99,8 +99,8 @@ cd plugins/translate && cargo build --release --target wasm32-unknown-unknown
 - **Demo mode reads your real `session.json`** (`last_page` restores a real
   artist page and renders "Loading…"). Always pass `--demo-page` explicitly.
 - **Nothing plugin-shaped ships in the binary.** The built-in engines are
-  the fallback; the two official plugins live in the catalog repo, whose
-  digests must match their wasm after every rebuild.
+  the fallback; published providers live in the catalog repo, whose digests
+  must match their wasm after every rebuild.
 - **wasmi is pinned to 0.31 in two places** (the app's Cargo.toml and the
   SDK's harness dev-dependency). Bump both together.
 - **ABI v1**: exports `memory, alloc, dealloc, abi_version, manifest,

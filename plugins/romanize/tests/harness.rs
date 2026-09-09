@@ -1,7 +1,7 @@
 //! The test suite runs the built module the way the host will: loaded into
 //! wasmi, driven over the ABI, offline, with canned answers.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use woofer_plugin_sdk::harness::{Plugin, Response};
 
 fn plugin() -> Plugin {

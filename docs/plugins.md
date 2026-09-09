@@ -10,22 +10,27 @@ lyrics tools. They can provide lyrics, translate a song, or write its words in
 the Latin alphabet. Woofer keeps ownership of the interface, network, files,
 and playback.
 
-The catalog is live at [usewoofer.com](https://usewoofer.com). Woofer itself is
-tagged and verified at **v0.4.0**, but its public binaries have not been
-published yet. Until they are, plugin installation is for people running a
-[source build](/download).
+The catalog is live at [usewoofer.com](https://usewoofer.com), and Woofer
+v0.4.0 is available from the [download page](/download).
 
 ## What you can add today
 
-The first reviewed providers are:
+The catalog currently offers:
 
 - **Translate** — adds a translation beneath each lyric line and skips songs
   already written in your chosen language.
 - **Romanize** — writes non-Latin lyrics in Latin characters, one line at a
   time.
 
-The host also supports lyrics providers, although the catalog does not list
-one yet. Woofer's own Spotify and LRCLIB lyrics flow remains available.
+The next catalog update adds:
+
+- **Offline Romanizer.** Performs best-effort Unicode transliteration inside
+  the sandbox and requests no network access.
+- **Lyrics.ovh.** Checks one more plain-lyrics source after Spotify and
+  LRCLIB have no match.
+
+Their source and ABI tests live in the repository now. Woofer's own Spotify
+and LRCLIB lyrics flow remains available before every catalog lyrics provider.
 
 [Browse the plugin catalog](https://usewoofer.com/plugins) ·
 [Read the complete architecture](/dev/plugin-architecture)
@@ -63,7 +68,7 @@ on its own. Removing every plugin returns Woofer to that baseline.
 ## Build a provider
 
 The repository includes a Rust SDK, an offline wasmi test harness, and the
-source for the official Translate and Romanize providers. Start with the
+source for the official providers. Start with the
 [plugin SDK guide](https://github.com/kreatzzz/woofer/tree/main/plugins) and use
 the [full ABI and sandbox specification](/dev/plugin-architecture) when
 implementing or reviewing a module.

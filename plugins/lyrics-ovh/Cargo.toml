@@ -1,0 +1,29 @@
+[package]
+name = "woofer-plugin-lyrics-ovh"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "A lyrics.ovh fallback provider for Woofer"
+repository = "https://github.com/kreatzzz/woofer"
+keywords = ["woofer", "plugin", "lyrics", "spotify"]
+categories = ["multimedia::audio"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+urlencoding = "2"
+woofer-plugin-sdk = { path = "../sdk" }
+
+[dev-dependencies]
+woofer-plugin-sdk = { path = "../sdk", features = ["harness"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[workspace]

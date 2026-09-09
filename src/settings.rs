@@ -450,6 +450,14 @@ mod tests {
         assert_eq!(settings.provider_chains, super::ProviderChains::default());
         assert_eq!(settings.zoom, 1.2);
     }
+
+    #[test]
+    fn fresh_settings_keep_every_plugin_opt_in() {
+        let settings = Settings::default();
+        assert_eq!(settings.provider_chains, super::ProviderChains::default());
+        assert!(!settings.lyrics_show_translation);
+        assert!(!settings.lyrics_romanize);
+    }
 }
 
 /// Restorable UI session: what was open when the app last closed.

@@ -5,9 +5,10 @@ description: The complete Woofer plugin ABI, capability, sandbox, provider-chain
 
 # Woofer plugin architecture
 
-Status: v1 shipped — the wasmi host, the SDK, and the first two plugin
-artifacts, Translate and Romanize, are published in the catalog repository
-and listed at [usewoofer.com](https://usewoofer.com). The app bundles nothing:
+Status: v1 shipped — the wasmi host, the SDK, Translate, and Romanize are
+published in the catalog repository and listed at
+[usewoofer.com](https://usewoofer.com). Offline Romanizer and Lyrics.ovh are
+implemented and awaiting the next catalog publish. The app bundles nothing:
 the built-in engines answer until a plugin is installed. Runtime: wasmi
 (wasm32-unknown-unknown), pure compute, no imports.
 
@@ -398,9 +399,12 @@ Layers, outermost first:
   lines skipped, identity results discarded.
 - **Translate** (`provider:translate`): newline-batched `dt=t`, chunked
   to the URL budget, source==target skip.
-- Both are **published in the catalog repository**, installed separately from it
-  (`woofer://install?plugin=translate` and `…plugin=romanize`); the
-  built-in engines answer until then and whenever they are absent;
-  both use the host's existing digest-aware translation cache. A catalog
-  lyrics plugin (`provider:lyrics`) remains roadmap work; the host-side chain
-  already accepts one in the gaps left by the built-in lyrics flow.
+- **Offline Romanizer** (`provider:romanize`): AnyAscii transliteration with
+  no planned HTTP requests and an empty domain allowlist.
+- **Lyrics.ovh** (`provider:lyrics`): a plain-lyrics request by artist and
+  title, used only after Spotify and LRCLIB miss.
+- Translate and Romanize are **published in the catalog repository** and
+  installed separately. Offline Romanizer and Lyrics.ovh are ready for the
+  next catalog publish. The built-in engines answer while providers are absent;
+  translation providers use the host's digest-aware translation cache and
+  lyrics providers use its track cache.

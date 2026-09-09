@@ -33,6 +33,13 @@ jobs:
           sudo apt-get install -y libasound2-dev libpulse-dev libxkbcommon-dev \
             libwayland-dev libgl1-mesa-dev
       - uses: Swatinem/rust-cache@v2
+      - name: Keep provider modules opt-in
+        shell: bash
+        run: |
+          if find assets -type f -name '*.wasm' -print -quit | grep -q .; then
+            echo 'provider modules must be published through the catalog, not bundled in the app' >&2
+            exit 1
+          fi
       - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy (default features)
@@ -94,6 +101,14 @@ jobs:
             manifest: plugins/romanize/Cargo.toml
             features: ''
             wasm: true
+          - name: romanize-offline
+            manifest: plugins/romanize-offline/Cargo.toml
+            features: ''
+            wasm: true
+          - name: lyrics-ovh
+            manifest: plugins/lyrics-ovh/Cargo.toml
+            features: ''
+            wasm: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -116,6 +131,8 @@ jobs:
           case "${{ matrix.name }}" in
             translate) module="$module_dir/woofer_plugin_translate.wasm" ;;
             romanize) module="$module_dir/woofer_plugin_romanize.wasm" ;;
+            romanize-offline) module="$module_dir/woofer_plugin_romanize_offline.wasm" ;;
+            lyrics-ovh) module="$module_dir/woofer_plugin_lyrics_ovh.wasm" ;;
           esac
           test -s "$module"
           # The integration harness loads this exact release artifact in the

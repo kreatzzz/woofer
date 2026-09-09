@@ -567,7 +567,7 @@ pub fn icon_button(
             color
         };
         let scale = if response.is_pointer_button_down_on() {
-            0.92
+            0.96
         } else {
             1.0
         };

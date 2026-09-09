@@ -10,6 +10,8 @@ This is the handbook for writing one.
       sdk/         woofer-plugin-sdk — the ABI, once, and the test harness
       translate/   provider:translate
       romanize/    provider:romanize
+      romanize-offline/  provider:romanize, no network
+      lyrics-ovh/        provider:lyrics
 
 Every crate is standalone (an empty `[workspace]` table of its own), builds
 its own module, and tests it on the same interpreter the host runs
@@ -100,8 +102,8 @@ let answered = plugin.fulfil(&input.to_string(), &[Response { status: 200, body:
 
 The resulting module stays in the crate's `target/` directory for local
 testing. Woofer does not embed plugin modules in `assets/` or in the
-application binary. The official Translate and Romanize modules are reviewed
-and published separately in the catalog repository, under
+application binary. The official provider modules are reviewed and published
+separately in the catalog repository, under
 `plugins/<id>/plugin.wasm`.
 
 When submitting a catalog entry, keep the module manifest's

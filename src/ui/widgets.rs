@@ -80,6 +80,17 @@ pub fn paint_cover(
         let icon_size = (rect.width() * 0.42).clamp(12.0, 64.0);
         theme::paint_icon(ui, fallback, rect, icon_size, palette.dim);
     }
+    let outline = if palette.dark {
+        Color32::from_white_alpha(26)
+    } else {
+        Color32::from_black_alpha(26)
+    };
+    painter.rect_stroke(
+        rect,
+        corner,
+        Stroke::new(1.0, outline),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// A soft drop shadow under a cover or card.

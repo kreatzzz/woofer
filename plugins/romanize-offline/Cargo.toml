@@ -1,0 +1,29 @@
+[package]
+name = "woofer-plugin-romanize-offline"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Offline Unicode romanization for Woofer lyrics"
+repository = "https://github.com/kreatzzz/woofer"
+keywords = ["woofer", "plugin", "romanize", "transliteration"]
+categories = ["multimedia::audio", "internationalization"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+any_ascii = "0.3.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+woofer-plugin-sdk = { path = "../sdk" }
+
+[dev-dependencies]
+woofer-plugin-sdk = { path = "../sdk", features = ["harness"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[workspace]

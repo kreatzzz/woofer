@@ -88,18 +88,16 @@ lyrics, and plugins — and in this repository under [docs/](docs/).
   a launcher, or a hotkey.
 - **Extendable with plugins.** Plugins are sandboxed WebAssembly modules
   that compute; Woofer does every fetch and holds each one to the domains
-  its manifest declares. Translate and Romanize are reviewed providers in
-  the catalog at [usewoofer.com](https://usewoofer.com); they install
-  separately, while the built-in engines remain the fallback.
+  its manifest declares. Reviewed providers live in the catalog at
+  [usewoofer.com](https://usewoofer.com); they install separately, while the
+  built-in engines remain the fallback.
   See [Plugins](#plugins) below.
 
 ## Install
 
-Woofer **v0.4.0 is tagged and its release workflow has been verified**, but
-the public GitHub release has not been published yet. Installers and archives
-will appear on the [releases page](https://github.com/kreatzzz/woofer/releases)
-with checksums after that explicit publish pass; build from source below in
-the meantime.
+Woofer **v0.4.0 is published**. Installers, portable archives, and their
+checksums are on the [releases page](https://github.com/kreatzzz/woofer/releases/tag/v0.4.0).
+On macOS, `brew install --cask kreatzzz/tap/woofer` installs the same build.
 
 The macOS build is unsigned for now, so macOS blocks the first open:
 right-click **Woofer** and choose **Open** — on recent macOS, System
@@ -162,11 +160,12 @@ plugin to the domains its manifest declares. No socket, no file, no clock
 crosses the boundary, and the app is fully functional with zero plugins
 installed.
 
-Translate and Romanize are the first reviewed catalog providers: the first
-echoes lyric lines in your language, and the second rewrites them in Latin
-letters. Install either from [usewoofer.com](https://usewoofer.com) or from a
-local `.wasm` file on the Plugins page. Neither module is bundled in the app;
-the built-in engines remain available when a provider is absent or disabled.
+Translate and Romanize are the first reviewed catalog providers. The next
+catalog update adds an offline romanizer and a Lyrics.ovh fallback. Install a
+provider from [usewoofer.com](https://usewoofer.com) or from a local `.wasm`
+file on the Plugins page. No module is bundled in the app. Fresh settings have
+empty provider chains, and the built-in engines remain available when a
+provider is absent or disabled.
 
 More plugins live in the catalog at [usewoofer.com](https://usewoofer.com).
 Press **Open in Woofer** on a card and the running app offers the install,
@@ -314,8 +313,8 @@ any time without signing you out.
 - `src/lyrics.rs`: LRCLIB fetch, match, and LRC parse behind a 30-day disk
   cache.
 - `src/translate.rs` and `src/plugins/`: the built-in translator fallback and
-  the wasmi plugin host. Translate and Romanize are catalog modules installed
-  separately; no plugin module is linked into the binary.
+  the wasmi plugin host. Provider modules install separately from the catalog;
+  no plugin module is linked into the binary.
 - `src/app.rs`, `src/model.rs`, `src/ui/`: state, navigation, and the views.
   Views collect `Action`s while drawing and the app applies them afterwards.
 - `src/mpris.rs`: Linux media controls on a dedicated thread.

@@ -75,7 +75,8 @@ memory, 5 MB per response, wall-clock backstop.
 
 **Catalog plugins**: Translate and Romanize are published in the Woofer
 catalog and installed separately (`woofer://install?plugin=translate` and
-`…plugin=romanize`). The app ships no plugin modules: a fresh install is still
+`…plugin=romanize`). Offline Romanizer and Lyrics.ovh are the next reviewed
+provider crates. The app ships no plugin modules: a fresh install is still
 fully useful because the built-in engines answer when a provider is absent.
 The plugin crates' own manifests are validated by their harnesses, and the
 host re-verifies each installed module against its catalog digest.
@@ -107,5 +108,5 @@ with zero plugins.
 The release workflow builds Linux x64+arm64 tarballs, Windows x64+arm64
 (zip + Inno Setup installer), a macOS universal DMG, and checksums, on a
 `v*` tag. See the [release runbook](/dev/release-plan) for the complete
-process. **v0.4.0 is tagged and its workflow is verified, but its binaries and
-package-manager entries are not public yet.**
+process. **v0.4.0 was published on Sep 5. The Homebrew cask is live, the
+winget submission is open, and AUR is waiting for maintainer authentication.**
